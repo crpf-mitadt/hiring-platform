@@ -1,0 +1,84 @@
+# Hiring Workflow
+
+## Job Lifecycle
+
+Implemented job states:
+
+- `DRAFT`
+- `PUBLISHED`
+- `CLOSED`
+
+Legal transitions:
+
+- `DRAFT -> PUBLISHED`
+- `PUBLISHED -> CLOSED`
+
+Draft jobs can be edited. Published and closed jobs cannot be edited through the draft update service.
+
+## Rubrics
+
+`JobRubric` owns the rubric container for a job. `JobRubricVersion` stores versioned criteria suitable
+for mapping to `StructuredJD.scoring_rubric` later.
+
+Rubric versions support:
+
+- human-created versions now
+- AI-proposed versions later
+- human approval
+- immutable historical approved versions by creating a new version for changes
+
+This milestone does not implement scoring logic in the platform.
+
+## Candidate and Application
+
+`Candidate` is separate from `Application`.
+
+`Candidate` may hold operational recruitment information such as name, contact, education/profile,
+experience/profile, and a resume reference.
+
+`Application` links one candidate to one job and stores submitted resume reference and current stage.
+
+## Application State Machine
+
+Foundation stages:
+
+- `APPLICATION_RECEIVED`
+- `SCREENING_PENDING`
+- `SCREENING_RUNNING`
+- `SCREENING_COMPLETE`
+- `SCREENING_REVIEW`
+- `SHORTLISTED_FOR_ASSESSMENT`
+- `SCREENING_HOLD`
+- `NOT_PROGRESSED_AFTER_SCREENING`
+
+Legal transitions:
+
+- `APPLICATION_RECEIVED -> SCREENING_PENDING`
+- `SCREENING_PENDING -> SCREENING_RUNNING`
+- `SCREENING_RUNNING -> SCREENING_COMPLETE`
+- `SCREENING_COMPLETE -> SCREENING_REVIEW`
+- `SCREENING_REVIEW -> SHORTLISTED_FOR_ASSESSMENT`
+- `SCREENING_REVIEW -> SCREENING_HOLD`
+- `SCREENING_REVIEW -> NOT_PROGRESSED_AFTER_SCREENING`
+- `SCREENING_HOLD -> SCREENING_REVIEW`
+- `SCREENING_HOLD -> SHORTLISTED_FOR_ASSESSMENT`
+- `SCREENING_HOLD -> NOT_PROGRESSED_AFTER_SCREENING`
+
+API controllers do not assign arbitrary status strings. All changes go through `transition_application`.
+
+## Human Screening Review
+
+Implemented actions:
+
+- shortlist for assessment
+- hold
+- do not progress
+
+Remarks are mandatory for all three. Each action creates:
+
+- stage history
+- audit event
+- foundation hiring decision row
+
+AI remains decision support only. The platform does not automatically make final hiring or rejection decisions.
+
