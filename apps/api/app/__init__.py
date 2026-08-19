@@ -1,0 +1,2 @@
+"""Hiring platform API package."""
+
