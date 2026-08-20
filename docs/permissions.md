@@ -14,6 +14,13 @@ Implemented roles:
 This milestone uses an explicit actor header (`X-Actor-Id`) rather than complex auth/session architecture.
 That keeps authorization boundaries testable while leaving room for real authentication later.
 
+The development actor provider is guarded by configuration:
+
+- `HIRING_ACTOR_PROVIDER=development`
+- `HIRING_ALLOW_DEVELOPMENT_ACTOR_PROVIDER=true`
+
+If a non-development actor provider is configured without a real provider implementation, requests fail closed.
+
 ## Candidate Access
 
 Candidates may access:
@@ -21,15 +28,19 @@ Candidates may access:
 - public published jobs
 - their own applications
 - their own candidate-safe application status
+- their own uploaded resume document metadata only through application/status flows
 
 Candidates must not access:
 
 - internal AI score
 - screening evidence
+- model endpoint slot/runtime metadata
+- technical failure messages
 - recruiter remarks
 - reviewer comments
 - internal decision rationale
 - other candidates' applications
+- other candidates' uploaded resumes
 
 Permission tests cover these boundaries.
 
@@ -73,4 +84,8 @@ Implemented audit surfaces:
 - application stage transitions
 - human screening decisions
 - rubric version create/approve
+- JD document replacement
+- screening enqueue/complete/fail
 
+Technical failure codes are audit/retry signals only. They must not be interpreted as candidate rejection or hiring
+outcome.

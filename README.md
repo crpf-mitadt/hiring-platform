@@ -11,7 +11,11 @@ This foundation milestone includes:
 - Role and permission boundaries.
 - Job, rubric, candidate, application, screening run, evidence, decision, and audit models.
 - Centralized application workflow service.
-- Deterministic mock screening provider behind a replaceable provider/runner boundary.
+- Stored JD/resume document metadata and upload validation.
+- Approved rubric identity and source JD checksum preservation.
+- Durable screening job boundary with mock default provider and production-shaped engine adapter.
+- Engine result mapper for `candidate-evaluation-v1` artifacts.
+- Retry/failure handling for screening jobs.
 
 Docs:
 
@@ -20,5 +24,10 @@ Docs:
 - `docs/screening-integration.md`
 - `docs/permissions.md`
 - `docs/development.md`
+- `docs/phase2-screening-integration-audit.md`
+- `docs/document-storage.md`
+- `docs/screening-worker.md`
+- `docs/tyrone-runtime.md`
+- `docs/tyrone-phase2-validation.md`
 
 Start with `docs/development.md` for local commands.

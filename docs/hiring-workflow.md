@@ -14,6 +14,7 @@ Legal transitions:
 - `PUBLISHED -> CLOSED`
 
 Draft jobs can be edited. Published and closed jobs cannot be edited through the draft update service.
+Publication requires a current approved rubric version.
 
 ## Rubrics
 
@@ -23,9 +24,12 @@ for mapping to `StructuredJD.scoring_rubric` later.
 Rubric versions support:
 
 - human-created versions now
-- AI-proposed versions later
+- mock/engine-generated proposed versions now through a provider boundary
+- AI-proposed versions later through the same provider boundary
 - human approval
 - immutable historical approved versions by creating a new version for changes
+- source JD document identity and checksum
+- approved payload checksum
 
 This milestone does not implement scoring logic in the platform.
 
@@ -37,6 +41,7 @@ This milestone does not implement scoring logic in the platform.
 experience/profile, and a resume reference.
 
 `Application` links one candidate to one job and stores submitted resume reference and current stage.
+Resume document IDs are separate from free-form references. Screening requires a stored resume document.
 
 ## Application State Machine
 
@@ -56,7 +61,9 @@ Legal transitions:
 - `APPLICATION_RECEIVED -> SCREENING_PENDING`
 - `SCREENING_PENDING -> SCREENING_RUNNING`
 - `SCREENING_RUNNING -> SCREENING_COMPLETE`
+- `SCREENING_RUNNING -> SCREENING_REVIEW` for technical failure requiring human/system review
 - `SCREENING_COMPLETE -> SCREENING_REVIEW`
+- `SCREENING_REVIEW -> SCREENING_PENDING` for retry after a failed run
 - `SCREENING_REVIEW -> SHORTLISTED_FOR_ASSESSMENT`
 - `SCREENING_REVIEW -> SCREENING_HOLD`
 - `SCREENING_REVIEW -> NOT_PROGRESSED_AFTER_SCREENING`
@@ -65,6 +72,9 @@ Legal transitions:
 - `SCREENING_HOLD -> NOT_PROGRESSED_AFTER_SCREENING`
 
 API controllers do not assign arbitrary status strings. All changes go through `transition_application`.
+
+Screening is queued as a durable `ScreeningJob` and executed by the worker boundary. The API enqueue route returns a
+queued `ScreeningRun`; model/OCR work is not performed inline.
 
 ## Human Screening Review
 
@@ -81,4 +91,5 @@ Remarks are mandatory for all three. Each action creates:
 - foundation hiring decision row
 
 AI remains decision support only. The platform does not automatically make final hiring or rejection decisions.
-
+Failed technical screening runs and proctoring-style anomalies must remain review inputs; they do not automatically
+reject a candidate.
