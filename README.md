@@ -27,7 +27,5 @@ Docs:
 - `docs/phase2-screening-integration-audit.md`
 - `docs/document-storage.md`
 - `docs/screening-worker.md`
-- `docs/tyrone-runtime.md`
-- `docs/tyrone-phase2-validation.md`
 
 Start with `docs/development.md` for local commands.

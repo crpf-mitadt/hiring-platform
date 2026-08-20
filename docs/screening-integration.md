@@ -104,7 +104,8 @@ results, unsupported rubric payloads, or malformed business data.
 `ScreeningRun.model_endpoint_slot` records `primary` or `fallback` where Gemma was used. Candidate-safe status responses
 do not include this internal runtime metadata.
 
-This milestone does not run Chandra/Gemma in validation; Tyrone remains the place for real AI/model testing.
+This milestone does not require Chandra/Gemma during local code review; real AI/model validation belongs in a configured
+server runtime.
 
 ## Mock Provider
 
@@ -132,7 +133,8 @@ For this milestone:
 
 - `POST /api/applications/{application_id}/screening-runs` enqueues a pending run/job.
 - `POST /api/screening-jobs/run-next` processes one pending job for controlled validation.
-- `uv run python -m app.worker --once` runs the same worker boundary from the command line on Tyrone.
+- `PYTHONPATH=apps/api .venv/bin/python -m app.worker --once` runs the same worker boundary from the command line in a
+  configured server/runtime environment.
 - Failed runs retain safe failure metadata and can be retried with
   `POST /api/applications/screening-runs/{run_id}/retry`.
 

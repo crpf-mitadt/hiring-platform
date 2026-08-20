@@ -20,7 +20,8 @@ Application
 
 - `POST /api/applications/{application_id}/screening-runs` queues a run/job.
 - `POST /api/screening-jobs/run-next` processes one job for controlled server validation.
-- `uv run python -m app.worker --once` provides a command-line worker entry point for later server validation.
+- `PYTHONPATH=apps/api .venv/bin/python -m app.worker --once` provides a command-line worker entry point for later
+  server validation.
 - The worker stores attempts, timestamps, failure codes/messages, and endpoint slot metadata.
 
 ## Failure Semantics

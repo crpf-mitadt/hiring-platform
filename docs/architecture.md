@@ -12,7 +12,7 @@ The hiring workspace owns two sibling repositories:
 The platform does not copy real resume/JD corpora, OCR outputs, model files, or private candidate data from
 `hiring-screening-engine`.
 
-Runtime configuration is environment-driven. Local Mac paths and Tyrone paths are not embedded in domain logic.
+Runtime configuration is environment-driven. Personal workstation and server paths are not embedded in domain logic.
 
 ## System Shape
 

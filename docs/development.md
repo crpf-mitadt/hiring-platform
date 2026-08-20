@@ -14,11 +14,11 @@ Workflow:
 local code + static review
   -> local commit
   -> push to GitHub later after human review
-  -> Tyrone pulls
-  -> integration/model tests on Tyrone
+  -> server runtime pulls
+  -> integration/model tests on the server runtime
 ```
 
-Do not connect to Tyrone from this milestone.
+Do not connect to a server runtime from this milestone.
 
 ## Corrected Local Rule
 

@@ -2,10 +2,12 @@
 .env
 .env.*
 !.env.example
-!.env.tyrone.example
+.env.local
 .env.tyrone
 .env.tyrone.local
 .env.phase2-*
+.local/
+.local-notes/
 .venv*/
 *.egg-info/
 __pycache__/
