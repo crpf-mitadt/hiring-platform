@@ -7,11 +7,22 @@ import {
   FileSearch,
   LayoutDashboard,
   ListFilter,
+  RotateCcw,
+  Upload,
   UserRound
 } from 'lucide-vue-next'
 import StatusBadge from './components/StatusBadge.vue'
 import { api } from './api/client'
-import type { Application, ApplicationStage, CandidateStatus, Job, ScreeningRun, User } from './api/types'
+import type {
+  Application,
+  ApplicationStage,
+  CandidateStatus,
+  Job,
+  RubricVersion,
+  ScreeningDossier,
+  ScreeningRun,
+  User
+} from './api/types'
 
 type Page =
   | 'dashboard'
@@ -33,12 +44,16 @@ const myApplications = ref<CandidateStatus[]>([])
 const selectedJob = ref<Job | null>(null)
 const selectedApplication = ref<Application | null>(null)
 const screeningRuns = ref<ScreeningRun[]>([])
+const rubricVersions = ref<RubricVersion[]>([])
+const dossier = ref<ScreeningDossier | null>(null)
 const dashboard = ref<Record<string, number>>({})
 const message = ref('')
 const loading = ref(false)
 const jobFilter = reactive({ search: '', status: '' })
 const applicationFilter = reactive({ job_id: '', stage: '' })
 const remarks = ref('')
+const jdFile = ref<File | null>(null)
+const resumeFile = ref<File | null>(null)
 
 const jobForm = reactive({
   title: 'Assistant Professor',
@@ -61,6 +76,7 @@ const currentActor = computed(() => users.value.find((user) => user.id === actor
 const staffActor = computed(() => currentActor.value?.roles.some((role) => role !== 'candidate') ?? false)
 const candidateActor = computed(() => currentActor.value?.roles.includes('candidate') ?? false)
 const latestScreening = computed(() => screeningRuns.value[0] ?? null)
+const approvedRubric = computed(() => rubricVersions.value.find((version) => version.status === 'APPROVED') ?? null)
 
 const staffNav = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -107,6 +123,15 @@ async function run<T>(task: () => Promise<T>, success?: string): Promise<T | nul
   }
 }
 
+function selectedFile(event: Event): File | null {
+  const input = event.target as HTMLInputElement
+  return input.files?.[0] ?? null
+}
+
+function setResumeFile(event: Event) {
+  resumeFile.value = selectedFile(event)
+}
+
 async function bootstrap() {
   await run(async () => {
     const existing = await api.listUsers()
@@ -132,7 +157,7 @@ async function bootstrap() {
     })
     const school = await api.createSchool('Synthetic School')
     const department = await api.createDepartment({ school_id: school.id, name: 'Synthetic Department' })
-    await api.createJob(recruiter.id, {
+    const job = await api.createJob(recruiter.id, {
       ...jobForm,
       school_id: school.id,
       department_id: department.id,
@@ -140,6 +165,15 @@ async function bootstrap() {
       hiring_manager_id: reviewer.id,
       department_reviewer_ids: [reviewer.id]
     })
+    const jd = new File(
+      ['Synthetic assistant professor JD for local platform development.'],
+      'synthetic-assistant-professor-jd.txt',
+      { type: 'text/plain' }
+    )
+    const jobWithJd = await api.uploadJobJd(recruiter.id, job.id, jd)
+    const version = await api.generateRubricVersion(recruiter.id, jobWithJd.id)
+    await api.approveRubricVersion(recruiter.id, version.id)
+    await api.publishJob(recruiter.id, jobWithJd.id)
     users.value = [recruiter, reviewer, candidate]
     actorId.value = recruiter.id
   }, 'Synthetic workspace ready.')
@@ -165,7 +199,7 @@ async function refreshJobs() {
   const params = new URLSearchParams()
   if (jobFilter.search) params.set('search', jobFilter.search)
   if (jobFilter.status) params.set('status', jobFilter.status)
-  const data = await run(() => (candidateActor.value ? api.publicJobs() : api.listJobs(params)))
+  const data = await run(() => (candidateActor.value ? api.publicJobs() : api.listJobs(actorId.value, params)))
   if (data) jobs.value = data
 }
 
@@ -187,6 +221,7 @@ async function createJob() {
   )
   if (created) {
     selectedJob.value = created
+    rubricVersions.value = []
     page.value = 'jobWorkspace'
     await refreshJobs()
   }
@@ -219,7 +254,7 @@ async function closeJob(job: Job) {
 
 async function createRubric() {
   if (!selectedJob.value) return
-  await run(
+  const version = await run(
     () =>
       api.createRubricVersion(actorId.value, selectedJob.value!.id, [
         { criterion_id: 'teaching', name: 'Teaching evidence', category: 'teaching', weight: 40 },
@@ -228,6 +263,45 @@ async function createRubric() {
       ]),
     'Rubric version created.'
   )
+  if (version) await refreshRubrics()
+}
+
+async function uploadJdDocument(event: Event) {
+  if (!selectedJob.value) return
+  jdFile.value = selectedFile(event)
+  if (!jdFile.value) return
+  const updated = await run(
+    () => api.uploadJobJd(actorId.value, selectedJob.value!.id, jdFile.value!),
+    'JD document uploaded. Regenerate and approve the rubric before publishing.'
+  )
+  if (updated) {
+    selectedJob.value = updated
+    rubricVersions.value = []
+    await refreshJobs()
+  }
+}
+
+async function generateRubric() {
+  if (!selectedJob.value) return
+  const version = await run(
+    () => api.generateRubricVersion(actorId.value, selectedJob.value!.id),
+    'Rubric generated from the current JD document.'
+  )
+  if (version) await refreshRubrics()
+}
+
+async function approveRubric(version: RubricVersion) {
+  const approved = await run(
+    () => api.approveRubricVersion(actorId.value, version.id),
+    'Rubric version approved and frozen.'
+  )
+  if (approved) await refreshRubrics()
+}
+
+async function refreshRubrics() {
+  if (!selectedJob.value || !staffActor.value) return
+  const versions = await run(() => api.listRubricVersions(actorId.value, selectedJob.value!.id))
+  if (versions) rubricVersions.value = versions
 }
 
 async function refreshApplications() {
@@ -239,20 +313,49 @@ async function refreshApplications() {
 }
 
 async function startScreening(application: Application) {
-  const runResult = await run(() => api.startScreening(actorId.value, application.id), 'Screening complete.')
+  const runResult = await run(() => api.startScreening(actorId.value, application.id), 'Screening queued.')
   if (runResult) {
-    selectedApplication.value = { ...application, current_stage: 'SCREENING_REVIEW' }
+    selectedApplication.value = { ...application, current_stage: 'SCREENING_PENDING' }
     screeningRuns.value = [runResult]
     page.value = 'candidateWorkspace'
     await refreshApplications()
+    await openCandidateWorkspace(selectedApplication.value)
   }
 }
 
 async function openCandidateWorkspace(application: Application) {
   selectedApplication.value = application
   page.value = 'candidateWorkspace'
-  const runs = await run(() => api.screeningRuns(actorId.value, application.id))
-  if (runs) screeningRuns.value = runs
+  const data = await run(() => api.screeningDossier(actorId.value, application.id))
+  if (data) {
+    dossier.value = data
+    screeningRuns.value = data.screening_runs
+  }
+}
+
+async function runScreeningWorkerOnce() {
+  const job = await run(() => api.runNextScreeningJob(actorId.value), 'Screening worker processed one job.')
+  if (job) {
+    screeningRuns.value = [job.screening_run, ...screeningRuns.value.filter((run) => run.id !== job.screening_run.id)]
+    if (selectedApplication.value) {
+      selectedApplication.value = { ...selectedApplication.value, current_stage: job.screening_run.run_status === 'COMPLETED' ? 'SCREENING_REVIEW' : selectedApplication.value.current_stage }
+      await openCandidateWorkspace(selectedApplication.value)
+    }
+    await refreshApplications()
+    await refreshDashboard()
+  }
+}
+
+async function retryLatestScreening() {
+  if (!latestScreening.value || latestScreening.value.run_status !== 'FAILED') return
+  const runResult = await run(
+    () => api.retryScreening(actorId.value, latestScreening.value!.id),
+    'Screening retry queued.'
+  )
+  if (runResult) {
+    screeningRuns.value = [runResult, ...screeningRuns.value]
+    await refreshApplications()
+  }
 }
 
 async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress') {
@@ -270,6 +373,14 @@ async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress
 
 async function applyToJob() {
   if (!selectedJob.value) return
+  if (!resumeFile.value) {
+    message.value = 'Upload a resume file before submitting.'
+    return
+  }
+  let resumeDocumentId: string | null = null
+  const document = await run(() => api.uploadResume(actorId.value, resumeFile.value!), 'Resume uploaded.')
+  if (!document) return
+  resumeDocumentId = document.id
   const application = await run(
     () =>
       api.apply(actorId.value, selectedJob.value!.id, {
@@ -280,9 +391,11 @@ async function applyToJob() {
           phone: applyForm.phone,
           education_profile: { highest_degree: 'Synthetic degree' },
           work_experience_profile: { summary: 'Synthetic experience' },
-          resume_document_ref: applyForm.resume_document_ref
+          resume_document_ref: applyForm.resume_document_ref,
+          resume_document_id: resumeDocumentId
         },
-        resume_document_ref: applyForm.resume_document_ref
+        resume_document_ref: applyForm.resume_document_ref,
+        resume_document_id: resumeDocumentId
       }),
     'Application submitted.'
   )
@@ -309,6 +422,7 @@ function selectJob(job: Job) {
     jd_document_ref: job.jd_document_ref ?? ''
   })
   page.value = staffActor.value ? 'jobWorkspace' : 'candidateDetail'
+  if (staffActor.value) void refreshRubrics()
 }
 
 onMounted(bootstrap)
@@ -423,12 +537,57 @@ onMounted(bootstrap)
           <TextInput v-model="jobForm.jd_document_ref" placeholder="JD document reference" />
           <Textarea v-model="jobForm.description" placeholder="Description" />
         </div>
+        <div class="document-strip">
+          <div>
+            <strong>JD Document</strong>
+            <small v-if="selectedJob.jd_document">
+              {{ selectedJob.jd_document.original_filename }} · {{ selectedJob.jd_document.sha256.slice(0, 12) }}
+            </small>
+            <small v-else>{{ selectedJob.jd_document_ref || 'No stored JD document yet' }}</small>
+          </div>
+          <label class="file-button">
+            <Upload :size="16" />
+            Upload JD
+            <input type="file" accept=".pdf,.docx,.txt,.md" @change="uploadJdDocument">
+          </label>
+        </div>
         <div class="actions">
           <Button :disabled="selectedJob.status !== 'DRAFT'" @click="saveDraft">Save Draft</Button>
           <Button :disabled="selectedJob.status !== 'DRAFT'" @click="publishJob(selectedJob)">Publish</Button>
           <Button :disabled="selectedJob.status !== 'PUBLISHED'" @click="closeJob(selectedJob)">Close</Button>
-          <Button @click="createRubric">New Rubric Version</Button>
+          <Button @click="generateRubric">Generate Rubric</Button>
+          <Button @click="createRubric">Manual Version</Button>
         </div>
+        <section class="rubric-section">
+          <div class="detail-head">
+            <div>
+              <h2>Rubric Versions</h2>
+              <p v-if="approvedRubric">Current approved: v{{ approvedRubric.version_number }}</p>
+              <p v-else>No approved rubric is current for this job.</p>
+            </div>
+          </div>
+          <div v-if="rubricVersions.length" class="list">
+            <div v-for="version in rubricVersions" :key="version.id" class="list-row">
+              <div>
+                <strong>Version {{ version.version_number }}</strong>
+                <small>
+                  {{ version.status }} · {{ version.source_structured_jd_schema_version || 'no schema' }} ·
+                  {{ version.source_jd_sha256 ? version.source_jd_sha256.slice(0, 12) : 'no JD hash' }}
+                </small>
+              </div>
+              <div class="row-actions">
+                <Badge>{{ version.criteria.length }} criteria</Badge>
+                <Button
+                  v-if="version.status !== 'APPROVED' && version.status !== 'SUPERSEDED'"
+                  @click="approveRubric(version)"
+                >
+                  Approve
+                </Button>
+              </div>
+            </div>
+          </div>
+          <p v-else class="empty-copy">Generate or add a rubric version before publishing.</p>
+        </section>
       </section>
 
       <section v-if="page === 'candidateDetail' && selectedJob" class="panel">
@@ -448,6 +607,11 @@ onMounted(bootstrap)
         <TextInput v-model="applyForm.email" placeholder="Email" />
         <TextInput v-model="applyForm.phone" placeholder="Phone" />
         <TextInput v-model="applyForm.resume_document_ref" placeholder="Resume document reference" />
+        <label class="upload-field">
+          <span>Resume file</span>
+          <input type="file" accept=".pdf,.json" @change="setResumeFile">
+        </label>
+        <small class="helper-copy">Supported locally: PDF for the real provider or JSON for synthetic structured profiles.</small>
         <Button @click="applyToJob">Submit Application</Button>
       </section>
 
@@ -456,9 +620,12 @@ onMounted(bootstrap)
           <div v-for="application in myApplications" :key="application.id" class="list-row">
             <div>
               <strong>{{ application.job_title }}</strong>
-              <small>{{ new Date(application.submitted_at).toLocaleString() }}</small>
+              <small>
+                {{ new Date(application.submitted_at).toLocaleString() }}
+                <span v-if="application.resume_filename"> · {{ application.resume_filename }}</span>
+              </small>
             </div>
-            <StatusBadge :value="application.current_stage" />
+            <StatusBadge :value="application.status_label" />
           </div>
         </div>
       </section>
@@ -475,9 +642,18 @@ onMounted(bootstrap)
               {{ stage }}
             </option>
           </select>
+          <Button @click="runScreeningWorkerOnce">
+            <RotateCcw :size="16" />
+            Run Worker Once
+          </Button>
         </div>
         <div class="list">
-          <button v-for="application in applications" :key="application.id" class="list-row" @click="openCandidateWorkspace(application)">
+          <div
+            v-for="application in applications"
+            :key="application.id"
+            class="list-row list-row--clickable"
+            @click="openCandidateWorkspace(application)"
+          >
             <div>
               <strong>{{ application.id.slice(0, 8) }}</strong>
               <small>{{ application.job_id.slice(0, 8) }} · {{ new Date(application.submitted_at).toLocaleString() }}</small>
@@ -488,10 +664,10 @@ onMounted(bootstrap)
                 v-if="application.current_stage === 'SCREENING_PENDING'"
                 @click.stop="startScreening(application)"
               >
-                Screen
+                Queue Screening
               </Button>
             </div>
-          </button>
+          </div>
         </div>
       </section>
 
@@ -500,22 +676,66 @@ onMounted(bootstrap)
           <h2>Overview</h2>
           <p>Application {{ selectedApplication.id }}</p>
           <StatusBadge :value="selectedApplication.current_stage" />
+          <div class="summary-grid">
+            <div>
+              <span>Job</span>
+              <strong>{{ selectedApplication.job_id.slice(0, 8) }}</strong>
+            </div>
+            <div>
+              <span>Submitted</span>
+              <strong>{{ new Date(selectedApplication.submitted_at).toLocaleDateString() }}</strong>
+            </div>
+          </div>
           <h2>Decision History</h2>
+          <div v-if="dossier?.decisions.length" class="history-list">
+            <div v-for="decision in dossier.decisions" :key="decision.id">
+              <strong>{{ decision.decision }}</strong>
+              <small>{{ new Date(decision.timestamp).toLocaleString() }} · {{ decision.remarks }}</small>
+            </div>
+          </div>
+          <p v-else class="empty-copy">No human screening decision has been recorded.</p>
           <Textarea v-model="remarks" placeholder="Required remarks" />
           <div class="actions">
             <Button @click="screeningDecision('shortlist')">Shortlist For Assessment</Button>
             <Button @click="screeningDecision('hold')">Hold</Button>
             <Button @click="screeningDecision('do-not-progress')">Do Not Progress</Button>
           </div>
+          <h2>Stage History</h2>
+          <div v-if="dossier?.stage_history.length" class="history-list">
+            <div v-for="item in dossier.stage_history" :key="item.id">
+              <strong>{{ item.previous_stage || 'START' }} → {{ item.new_stage }}</strong>
+              <small>{{ new Date(item.timestamp).toLocaleString() }} · {{ item.remarks || 'system transition' }}</small>
+            </div>
+          </div>
         </div>
         <div class="panel">
           <h2>AI Screening</h2>
           <div v-if="latestScreening" class="screening-summary">
             <Badge>{{ latestScreening.provider }}</Badge>
-            <strong>{{ latestScreening.score }} / 100</strong>
-            <span>Eligibility: {{ latestScreening.eligibility }}</span>
-            <span>Evidence completeness: {{ latestScreening.evidence_completeness }}</span>
-            <span>Confirmed experience: {{ latestScreening.confirmed_experience_months }} months</span>
+            <StatusBadge :value="latestScreening.run_status" />
+            <strong>{{ latestScreening.score ?? 'Queued' }} / {{ latestScreening.maximum_score ?? 100 }}</strong>
+            <span>Eligibility: {{ latestScreening.eligibility ?? 'Pending' }}</span>
+            <span>Evidence completeness: {{ latestScreening.evidence_completeness ?? 'Pending' }}</span>
+            <span>Confirmed experience: {{ latestScreening.confirmed_experience_months ?? 0 }} months</span>
+            <span v-if="latestScreening.engine_contract_version">
+              Contract: {{ latestScreening.engine_contract_version }}
+            </span>
+            <span v-if="latestScreening.jd_document_sha256">
+              JD SHA-256: {{ latestScreening.jd_document_sha256.slice(0, 12) }}
+            </span>
+            <span v-if="latestScreening.resume_document_sha256">
+              Resume SHA-256: {{ latestScreening.resume_document_sha256.slice(0, 12) }}
+            </span>
+            <span v-if="latestScreening.model_endpoint_slot">
+              Endpoint slot: {{ latestScreening.model_endpoint_slot }}
+            </span>
+            <span v-if="latestScreening.failure_message" class="failure-copy">
+              {{ latestScreening.failure_code }}: {{ latestScreening.failure_message }}
+            </span>
+            <Button v-if="latestScreening.run_status === 'FAILED'" @click="retryLatestScreening">Retry Screening</Button>
+            <div v-if="latestScreening.warnings.length" class="warning-list">
+              <span v-for="warning in latestScreening.warnings" :key="warning">{{ warning }}</span>
+            </div>
           </div>
           <div v-for="criterion in latestScreening?.criterion_results ?? []" :key="criterion.id" class="criterion">
             <div class="detail-head">
@@ -523,6 +743,13 @@ onMounted(bootstrap)
               <StatusBadge :value="criterion.status" />
             </div>
             <p>{{ criterion.explanation }}</p>
+            <small>
+              Weight {{ criterion.weight ?? 0 }} · score {{ criterion.weighted_score }} · matched
+              {{ criterion.matched_terms.join(', ') || 'none' }}
+            </small>
+            <p v-if="criterion.missing_information.length" class="warning-list">
+              Missing: {{ criterion.missing_information.join(', ') }}
+            </p>
             <details v-for="evidence in criterion.evidence" :key="evidence.id">
               <summary>{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary>
               <p>{{ evidence.exact_text }}</p>

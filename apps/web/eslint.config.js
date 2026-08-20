@@ -13,6 +13,10 @@ export default [
   {
     languageOptions: {
       globals: {
+        Event: 'readonly',
+        File: 'readonly',
+        FormData: 'readonly',
+        HTMLInputElement: 'readonly',
         URLSearchParams: 'readonly',
         fetch: 'readonly',
         module: 'readonly',

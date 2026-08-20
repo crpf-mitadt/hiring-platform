@@ -2,6 +2,8 @@ import vue from '@vitejs/plugin-vue'
 import frappeui from 'frappe-ui/vite'
 import { defineConfig } from 'vite'
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8010'
+
 export default defineConfig({
   plugins: [
     frappeui({
@@ -14,7 +16,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8000'
+      '/api': apiProxyTarget
     }
   },
   test: {

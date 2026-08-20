@@ -1,4 +1,14 @@
-import type { Application, CandidateStatus, Job, ScreeningRun, User } from './types'
+import type {
+  Application,
+  CandidateStatus,
+  DocumentRead,
+  Job,
+  RubricVersion,
+  ScreeningDossier,
+  ScreeningJob,
+  ScreeningRun,
+  User
+} from './types'
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -16,6 +26,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       ...(options.actorId ? { 'X-Actor-Id': options.actorId } : {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail))
+  }
+  return response.json()
+}
+
+async function requestForm<T>(path: string, actorId: string, formData: FormData): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'X-Actor-Id': actorId },
+    body: formData
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
@@ -43,9 +66,9 @@ export const api = {
   dashboard(actorId: string) {
     return request<Record<string, number>>('/api/dashboard/recruitment', { actorId })
   },
-  listJobs(params: URLSearchParams = new URLSearchParams()) {
+  listJobs(actorId: string, params: URLSearchParams = new URLSearchParams()) {
     const query = params.toString()
-    return request<Job[]>(`/api/jobs${query ? `?${query}` : ''}`)
+    return request<Job[]>(`/api/jobs${query ? `?${query}` : ''}`, { actorId })
   },
   publicJobs() {
     return request<Job[]>('/api/public/jobs')
@@ -62,8 +85,18 @@ export const api = {
   closeJob(actorId: string, jobId: string) {
     return request<Job>(`/api/jobs/${jobId}/close`, { actorId, method: 'POST' })
   },
+  uploadJobJd(actorId: string, jobId: string, file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestForm<Job>(`/api/jobs/${jobId}/jd-document`, actorId, formData)
+  },
+  uploadResume(actorId: string, file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestForm<DocumentRead>('/api/documents/resumes', actorId, formData)
+  },
   createRubricVersion(actorId: string, jobId: string, criteria: unknown[]) {
-    return request('/api/jobs/' + jobId + '/rubric-versions', {
+    return request<RubricVersion>('/api/jobs/' + jobId + '/rubric-versions', {
       actorId,
       method: 'POST',
       body: {
@@ -72,6 +105,15 @@ export const api = {
         engine_mapping: { future_schema: 'structured-jd-v1.scoring_rubric' }
       }
     })
+  },
+  generateRubricVersion(actorId: string, jobId: string) {
+    return request<RubricVersion>(`/api/jobs/${jobId}/generate-rubric`, { actorId, method: 'POST' })
+  },
+  listRubricVersions(actorId: string, jobId: string) {
+    return request<RubricVersion[]>(`/api/jobs/${jobId}/rubric-versions`, { actorId })
+  },
+  approveRubricVersion(actorId: string, versionId: string) {
+    return request<RubricVersion>(`/api/rubric-versions/${versionId}/approve`, { actorId, method: 'POST' })
   },
   apply(actorId: string, jobId: string, payload: unknown) {
     return request<Application>(`/api/applications/jobs/${jobId}/apply`, {
@@ -93,8 +135,20 @@ export const api = {
       method: 'POST'
     })
   },
+  runNextScreeningJob(actorId: string) {
+    return request<ScreeningJob | null>('/api/screening-jobs/run-next', { actorId, method: 'POST' })
+  },
+  retryScreening(actorId: string, runId: string) {
+    return request<ScreeningRun>(`/api/applications/screening-runs/${runId}/retry`, {
+      actorId,
+      method: 'POST'
+    })
+  },
   screeningRuns(actorId: string, applicationId: string) {
     return request<ScreeningRun[]>(`/api/applications/${applicationId}/screening`, { actorId })
+  },
+  screeningDossier(actorId: string, applicationId: string) {
+    return request<ScreeningDossier>(`/api/applications/${applicationId}/screening-dossier`, { actorId })
   },
   transition(actorId: string, applicationId: string, action: string, remarks: string) {
     return request<Application>(`/api/applications/${applicationId}/${action}`, {
@@ -104,4 +158,3 @@ export const api = {
     })
   }
 }
-

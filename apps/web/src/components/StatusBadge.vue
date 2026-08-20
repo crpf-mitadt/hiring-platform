@@ -4,7 +4,7 @@ import { computed } from 'vue'
 const props = defineProps<{ value: string }>()
 
 const tone = computed(() => {
-  if (['PUBLISHED', 'SCREENING_REVIEW', 'SHORTLISTED_FOR_ASSESSMENT', 'COMPLETE'].includes(props.value)) {
+  if (['PUBLISHED', 'SCREENING_REVIEW', 'SHORTLISTED_FOR_ASSESSMENT', 'COMPLETE', 'COMPLETED'].includes(props.value)) {
     return 'good'
   }
   if (['SCREENING_HOLD', 'DRAFT', 'REVIEW'].includes(props.value)) return 'warn'
@@ -16,4 +16,3 @@ const tone = computed(() => {
 <template>
   <span class="status-badge" :class="`status-badge--${tone}`">{{ value.replaceAll('_', ' ') }}</span>
 </template>
-
