@@ -32,6 +32,13 @@ class HiringDecisionType(str, enum.Enum):
     ANOTHER_ROUND = "another_round"
 
 
+class RubricVersionStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    PROPOSED = "PROPOSED"
+    APPROVED = "APPROVED"
+    SUPERSEDED = "SUPERSEDED"
+
+
 class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
 
@@ -47,6 +54,7 @@ class Job(Base, TimestampMixin):
     application_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     jd_document_ref: Mapped[str | None] = mapped_column(String(500))
+    jd_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
     recruiter_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     hiring_manager_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     status: Mapped[JobStatus] = mapped_column(
@@ -55,6 +63,7 @@ class Job(Base, TimestampMixin):
 
     school = relationship("School")
     department = relationship("Department")
+    jd_document = relationship("Document", foreign_keys=[jd_document_id])
     recruiter = relationship("User", foreign_keys=[recruiter_id])
     hiring_manager = relationship("User", foreign_keys=[hiring_manager_id])
     reviewers: Mapped[list["JobReviewer"]] = relationship(
@@ -95,15 +104,26 @@ class JobRubricVersion(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     rubric_id: Mapped[str] = mapped_column(ForeignKey("job_rubrics.id"), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    status: Mapped[RubricVersionStatus] = mapped_column(
+        Enum(RubricVersionStatus, name="rubric_version_status"),
+        nullable=False,
+        default=RubricVersionStatus.DRAFT,
+        index=True,
+    )
     proposed_by: Mapped[str] = mapped_column(String(30), nullable=False, default="human")
     approved_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_jd_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), index=True)
+    source_jd_sha256: Mapped[str | None] = mapped_column(String(64))
+    source_structured_jd_schema_version: Mapped[str | None] = mapped_column(String(60))
+    structured_jd_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    approved_payload_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     criteria: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     engine_mapping: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     rubric: Mapped[JobRubric] = relationship(back_populates="versions")
     approved_by = relationship("User")
+    source_jd_document = relationship("Document", foreign_keys=[source_jd_document_id])
 
 
 class Candidate(Base, TimestampMixin):
@@ -117,8 +137,10 @@ class Candidate(Base, TimestampMixin):
     education_profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     work_experience_profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     resume_document_ref: Mapped[str | None] = mapped_column(String(500))
+    resume_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
 
     user = relationship("User")
+    resume_document = relationship("Document", foreign_keys=[resume_document_id])
     applications: Mapped[list["Application"]] = relationship(back_populates="candidate")
 
 
@@ -131,6 +153,7 @@ class Application(Base, TimestampMixin):
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), nullable=False, index=True)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     resume_document_ref: Mapped[str | None] = mapped_column(String(500))
+    resume_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
     current_stage: Mapped[ApplicationStage] = mapped_column(
         Enum(ApplicationStage, name="application_stage"),
         default=ApplicationStage.APPLICATION_RECEIVED,
@@ -140,6 +163,7 @@ class Application(Base, TimestampMixin):
 
     candidate: Mapped[Candidate] = relationship(back_populates="applications")
     job: Mapped[Job] = relationship()
+    resume_document = relationship("Document", foreign_keys=[resume_document_id])
     stage_history: Mapped[list["ApplicationStageHistory"]] = relationship(
         back_populates="application", cascade="all, delete-orphan", order_by="ApplicationStageHistory.timestamp"
     )
@@ -174,4 +198,3 @@ class HiringDecision(Base):
 
     application: Mapped[Application] = relationship()
     actor = relationship("User")
-

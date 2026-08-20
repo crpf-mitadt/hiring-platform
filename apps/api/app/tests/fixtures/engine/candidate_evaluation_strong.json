@@ -1,0 +1,130 @@
+{
+  "artifact_schema_version": "candidate-evaluation-v1",
+  "evaluation_id": "synthetic-eval-strong",
+  "candidate_id": "synthetic-candidate-001",
+  "job_id": "synthetic-job-001",
+  "scoring_version": "deterministic-scoring-v1",
+  "warnings": [],
+  "eligibility": {
+    "status": "PASS",
+    "checked_requirements": ["masters-degree", "teaching-experience"],
+    "failed_requirements": [],
+    "ambiguous_requirements": [],
+    "requirement_statuses": {
+      "masters-degree": "met",
+      "teaching-experience": "met"
+    },
+    "requirement_details": [
+      {
+        "requirement_id": "masters-degree",
+        "status": "met",
+        "evidence_count": 1
+      },
+      {
+        "requirement_id": "teaching-experience",
+        "status": "met",
+        "evidence_count": 2
+      }
+    ],
+    "explanation": "Synthetic candidate meets mandatory requirements."
+  },
+  "criterion_evaluations": [
+    {
+      "criterion_id": "teaching-evidence",
+      "criterion_name": "Teaching Evidence",
+      "category": "required",
+      "weight": 45,
+      "requirement_ids": ["teaching-experience"],
+      "match_fraction": 1,
+      "weighted_score": 45,
+      "status": "met",
+      "explanation": "Synthetic evidence supports classroom teaching.",
+      "candidate_requirement": "Two years of classroom teaching",
+      "evidence_found": ["Taught undergraduate programming courses for six semesters."],
+      "missing_information": [],
+      "ambiguity": [],
+      "verification_needed": [],
+      "component_assessment": {
+        "supported_core_components": ["classroom teaching"],
+        "supported_preferred_components": ["curriculum design"],
+        "supported_evaluation_dimensions": ["pedagogy"],
+        "supported_adjacent_components": [],
+        "missing_core_components": [],
+        "missing_preferred_components": [],
+        "missing_evaluation_dimensions": []
+      },
+      "evidence": [
+        {
+          "source_type": "resume",
+          "source_document_id": "synthetic-resume",
+          "page_number": 1,
+          "block_index": 4,
+          "exact_text": "Taught undergraduate programming courses for six semesters.",
+          "normalized_text": "taught undergraduate programming courses",
+          "evidence_status": "supported",
+          "notes": "Synthetic fixture."
+        }
+      ]
+    },
+    {
+      "criterion_id": "research-evidence",
+      "criterion_name": "Research Evidence",
+      "category": "preferred",
+      "weight": 35,
+      "requirement_ids": ["publications"],
+      "match_fraction": 0.75,
+      "weighted_score": 26.25,
+      "status": "partially_met",
+      "explanation": "Synthetic publication evidence is present but needs review.",
+      "candidate_requirement": "Peer-reviewed publications",
+      "evidence_found": ["Published two education-technology papers."],
+      "missing_information": ["Venue ranking not provided."],
+      "ambiguity": ["Publication venue requires verification."],
+      "verification_needed": ["Confirm peer-review status."],
+      "component_assessment": {
+        "supported_core_components": ["publications"],
+        "supported_preferred_components": [],
+        "supported_evaluation_dimensions": [],
+        "supported_adjacent_components": ["education technology"],
+        "missing_core_components": [],
+        "missing_preferred_components": ["indexed journal"],
+        "missing_evaluation_dimensions": []
+      },
+      "evidence": [
+        {
+          "source_type": "resume",
+          "source_document_id": "synthetic-resume",
+          "page_number": 2,
+          "block_index": 9,
+          "exact_text": "Published two education-technology papers.",
+          "normalized_text": "published education technology papers",
+          "evidence_status": "partially_supported",
+          "notes": "Synthetic fixture."
+        }
+      ]
+    }
+  ],
+  "score_before_gates": 71.25,
+  "final_score": 71.25,
+  "maximum_score": 100,
+  "evidence_completeness": 0.78,
+  "evidence_completeness_diagnostics": {
+    "criterion_count": 2,
+    "supported_criteria": 2
+  },
+  "experience_summary": {
+    "confirmed_months": 42,
+    "uncertain_ranges": [
+      {
+        "label": "adjunct teaching",
+        "months_min": 4,
+        "months_max": 8
+      }
+    ]
+  },
+  "strengths": ["Documented classroom teaching", "Relevant research exposure"],
+  "gaps": ["Publication venue requires verification"],
+  "missing_information": ["Detailed publication metadata"],
+  "recommendation_label": "Human Review",
+  "human_review_required": true
+}

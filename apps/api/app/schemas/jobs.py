@@ -2,6 +2,7 @@ from datetime import datetime
 
 from app.models import JobStatus
 from app.schemas.common import ApiModel
+from app.schemas.documents import DocumentRead
 
 
 class SchoolCreate(ApiModel):
@@ -36,6 +37,7 @@ class JobBase(ApiModel):
     application_end: datetime | None = None
     description: str = ""
     jd_document_ref: str | None = None
+    jd_document_id: str | None = None
     recruiter_id: str
     hiring_manager_id: str
     department_reviewer_ids: list[str] = []
@@ -55,6 +57,7 @@ class JobUpdate(ApiModel):
     application_end: datetime | None = None
     description: str | None = None
     jd_document_ref: str | None = None
+    jd_document_id: str | None = None
     hiring_manager_id: str | None = None
     department_reviewer_ids: list[str] | None = None
 
@@ -64,12 +67,15 @@ class JobRead(JobBase):
     status: JobStatus
     created_at: datetime
     updated_at: datetime
+    jd_document: DocumentRead | None = None
 
 
 class RubricVersionCreate(ApiModel):
     criteria: list[dict]
     proposed_by: str = "human"
     engine_mapping: dict = {}
+    structured_jd_payload: dict = {}
+    source_jd_document_id: str | None = None
 
 
 class RubricVersionRead(ApiModel):
@@ -80,6 +86,10 @@ class RubricVersionRead(ApiModel):
     proposed_by: str
     approved_by_id: str | None
     approved_at: datetime | None
+    source_jd_document_id: str | None
+    source_jd_sha256: str | None
+    source_structured_jd_schema_version: str | None
+    approved_payload_sha256: str | None
     criteria: list[dict]
     engine_mapping: dict
-
+    structured_jd_payload: dict

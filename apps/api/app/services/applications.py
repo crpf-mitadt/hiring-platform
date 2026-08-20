@@ -1,9 +1,10 @@
 from app.core.errors import InvalidTransition, NotFound, PermissionDenied
 from app.core.security import require_any_role, role_values
 from app.db.base import utcnow
-from app.models import Application, ApplicationStage, Candidate, Job, JobStatus, Role, User
+from app.models import Application, ApplicationStage, Candidate, DocumentPurpose, Job, JobStatus, Role, User
 from app.schemas.applications import ApplicationCreate
 from app.services.audit import record_audit
+from app.services.documents import get_document
 from app.services.workflow import transition_application
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +20,10 @@ def submit_application(db: Session, actor: User, job_id: str, data: ApplicationC
         raise InvalidTransition("Applications are only accepted for published jobs")
 
     candidate = None
+    if data.candidate.user_id is None:
+        data.candidate.user_id = actor.id
+    if data.candidate.user_id != actor.id:
+        raise PermissionDenied("Candidate can only submit their own profile")
     if data.candidate.user_id:
         candidate = db.scalar(select(Candidate).where(Candidate.user_id == data.candidate.user_id))
     if candidate is None:
@@ -27,12 +32,23 @@ def submit_application(db: Session, actor: User, job_id: str, data: ApplicationC
         db.flush()
     elif candidate.user_id != actor.id:
         raise PermissionDenied("Candidate can only submit their own profile")
+    resume_document_id = data.resume_document_id or data.candidate.resume_document_id
+    if resume_document_id:
+        resume_document = get_document(db, resume_document_id)
+        if resume_document.purpose != DocumentPurpose.RESUME:
+            raise InvalidTransition("Applications require a resume document")
+        if resume_document.uploaded_by_id != actor.id:
+            raise PermissionDenied("Candidate can only attach their own uploaded resume")
+        candidate.resume_document_id = resume_document.id
+    if data.candidate.resume_document_ref:
+        candidate.resume_document_ref = data.candidate.resume_document_ref
 
     application = Application(
         candidate=candidate,
         job=job,
         submitted_at=utcnow(),
         resume_document_ref=data.resume_document_ref or candidate.resume_document_ref,
+        resume_document_id=resume_document_id or candidate.resume_document_id,
     )
     db.add(application)
     db.flush()
@@ -95,6 +111,25 @@ def candidate_safe_status(application: Application) -> dict:
         "job_id": application.job_id,
         "job_title": application.job.title,
         "submitted_at": application.submitted_at,
-        "current_stage": application.current_stage,
+        "status_label": _candidate_status_label(application.current_stage),
+        "resume_filename": (
+            application.resume_document.original_filename if application.resume_document else None
+        ),
     }
 
+
+def _candidate_status_label(stage: ApplicationStage) -> str:
+    if stage in {
+        ApplicationStage.APPLICATION_RECEIVED,
+        ApplicationStage.SCREENING_PENDING,
+        ApplicationStage.SCREENING_RUNNING,
+        ApplicationStage.SCREENING_COMPLETE,
+        ApplicationStage.SCREENING_REVIEW,
+        ApplicationStage.SCREENING_HOLD,
+    }:
+        return "Under Review"
+    if stage == ApplicationStage.SHORTLISTED_FOR_ASSESSMENT:
+        return "Assessment"
+    if stage == ApplicationStage.NOT_PROGRESSED_AFTER_SCREENING:
+        return "Closed"
+    return "Application Received"

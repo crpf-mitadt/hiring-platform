@@ -16,9 +16,13 @@ from sqlalchemy.orm import Session
 LEGAL_TRANSITIONS: dict[ApplicationStage, set[ApplicationStage]] = {
     ApplicationStage.APPLICATION_RECEIVED: {ApplicationStage.SCREENING_PENDING},
     ApplicationStage.SCREENING_PENDING: {ApplicationStage.SCREENING_RUNNING},
-    ApplicationStage.SCREENING_RUNNING: {ApplicationStage.SCREENING_COMPLETE},
+    ApplicationStage.SCREENING_RUNNING: {
+        ApplicationStage.SCREENING_COMPLETE,
+        ApplicationStage.SCREENING_REVIEW,
+    },
     ApplicationStage.SCREENING_COMPLETE: {ApplicationStage.SCREENING_REVIEW},
     ApplicationStage.SCREENING_REVIEW: {
+        ApplicationStage.SCREENING_PENDING,
         ApplicationStage.SHORTLISTED_FOR_ASSESSMENT,
         ApplicationStage.SCREENING_HOLD,
         ApplicationStage.NOT_PROGRESSED_AFTER_SCREENING,
@@ -101,4 +105,3 @@ def transition_application(
         remarks=remarks,
     )
     return history
-

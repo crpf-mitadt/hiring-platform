@@ -13,6 +13,7 @@ class CandidateCreate(ApiModel):
     education_profile: dict = {}
     work_experience_profile: dict = {}
     resume_document_ref: str | None = None
+    resume_document_id: str | None = None
 
 
 class CandidateRead(ApiModel):
@@ -24,11 +25,13 @@ class CandidateRead(ApiModel):
     education_profile: dict
     work_experience_profile: dict
     resume_document_ref: str | None
+    resume_document_id: str | None
 
 
 class ApplicationCreate(ApiModel):
     candidate: CandidateCreate
     resume_document_ref: str | None = None
+    resume_document_id: str | None = None
 
 
 class ApplicationRead(ApiModel):
@@ -37,6 +40,7 @@ class ApplicationRead(ApiModel):
     job_id: str
     submitted_at: datetime
     resume_document_ref: str | None
+    resume_document_id: str | None
     current_stage: ApplicationStage
 
 
@@ -45,7 +49,8 @@ class CandidateApplicationStatus(ApiModel):
     job_id: str
     job_title: str
     submitted_at: datetime
-    current_stage: ApplicationStage
+    status_label: str
+    resume_filename: str | None = None
 
 
 class ApplicationTransitionRequest(ApiModel):
@@ -60,4 +65,3 @@ class StageHistoryRead(ApiModel):
     actor_id: str
     timestamp: datetime
     remarks: str | None
-

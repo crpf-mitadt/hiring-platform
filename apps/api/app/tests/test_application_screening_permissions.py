@@ -9,6 +9,8 @@ def test_candidate_application_status_is_safe(client, users, published_job):
     assert mine.json()[0]["id"] == application["id"]
     assert "score" not in mine.text
     assert "evidence" not in mine.text
+    assert "model_endpoint_slot" not in mine.text
+    assert "failure_message" not in mine.text
 
 
 def test_candidate_cannot_access_other_candidate_application(client, users, published_job):
@@ -22,10 +24,16 @@ def test_candidate_cannot_access_other_candidate_application(client, users, publ
 
 def test_candidate_cannot_access_screening_evidence(client, users, published_job):
     application = submit_application(client, users, published_job)
-    client.post(
+    run = client.post(
         f"/api/applications/{application['id']}/screening-runs",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
     )
+    assert run.status_code == 200, run.text
+    worker = client.post(
+        "/api/screening-jobs/run-next",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert worker.status_code == 200, worker.text
     response = client.get(
         f"/api/applications/{application['id']}/screening",
         headers={"X-Actor-Id": users["candidate"]["id"]},
@@ -41,11 +49,28 @@ def test_mock_screening_moves_application_to_review_and_persists_evidence(client
     )
     assert run.status_code == 200, run.text
     payload = run.json()
-    assert payload["run_status"] == "COMPLETE"
-    assert payload["eligibility"] in {"PASS", "REVIEW"}
-    assert payload["score"] > 0
-    assert payload["criterion_results"]
-    assert payload["criterion_results"][0]["evidence"]
+    assert payload["run_status"] == "PENDING"
+
+    duplicate = client.post(
+        f"/api/applications/{application['id']}/screening-runs",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["id"] == payload["id"]
+
+    worker = client.post(
+        "/api/screening-jobs/run-next",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert worker.status_code == 200, worker.text
+    completed_run = worker.json()["screening_run"]
+    assert completed_run["run_status"] == "COMPLETED"
+    assert completed_run["engine_contract_version"] == "candidate-evaluation-v1/platform-mapper-v1"
+    assert completed_run["structured_jd_sha256"] is None
+    assert completed_run["eligibility"] in {"PASS", "REVIEW"}
+    assert completed_run["score"] > 0
+    assert completed_run["criterion_results"]
+    assert completed_run["criterion_results"][0]["evidence"]
 
     refreshed = client.get(
         f"/api/applications/{application['id']}",
@@ -56,10 +81,16 @@ def test_mock_screening_moves_application_to_review_and_persists_evidence(client
 
 def test_human_screening_decisions_require_remarks(client, users, published_job):
     application = submit_application(client, users, published_job)
-    client.post(
+    run = client.post(
         f"/api/applications/{application['id']}/screening-runs",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
     )
+    assert run.status_code == 200, run.text
+    worker = client.post(
+        "/api/screening-jobs/run-next",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert worker.status_code == 200, worker.text
     missing_remarks = client.post(
         f"/api/applications/{application['id']}/shortlist",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
@@ -74,6 +105,13 @@ def test_human_screening_decisions_require_remarks(client, users, published_job)
     )
     assert shortlist.status_code == 200
     assert shortlist.json()["current_stage"] == "SHORTLISTED_FOR_ASSESSMENT"
+
+    dossier = client.get(
+        f"/api/applications/{application['id']}/screening-dossier",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert dossier.status_code == 200, dossier.text
+    assert dossier.json()["decisions"][0]["remarks"] == "Synthetic reviewer remark supporting assessment shortlist."
 
 
 def test_invalid_transition_fails(client, users, published_job):

@@ -7,6 +7,17 @@ def test_job_lifecycle_allows_draft_publish_close(client, users, draft_job):
     assert patch_response.status_code == 200
     assert patch_response.json()["location"] == "Mumbai"
 
+    version = client.post(
+        f"/api/jobs/{draft_job['id']}/generate-rubric",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert version.status_code == 200, version.text
+    approved = client.post(
+        f"/api/rubric-versions/{version.json()['id']}/approve",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert approved.status_code == 200, approved.text
+
     publish_response = client.post(
         f"/api/jobs/{draft_job['id']}/publish",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
@@ -56,6 +67,23 @@ def test_candidate_cannot_create_job(client, users, org):
     assert response.status_code == 403
 
 
+def test_job_routes_do_not_expose_drafts_to_candidates(client, users, draft_job):
+    public_detail = client.get(f"/api/public/jobs/{draft_job['id']}")
+    assert public_detail.status_code == 404
+
+    candidate_list = client.get(
+        "/api/jobs",
+        headers={"X-Actor-Id": users["candidate"]["id"]},
+    )
+    assert candidate_list.status_code == 403
+
+    staff_list = client.get(
+        "/api/jobs",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert staff_list.status_code == 200
+
+
 def test_rubric_version_can_be_approved_but_changes_create_new_version(client, users, draft_job):
     version = client.post(
         f"/api/jobs/{draft_job['id']}/rubric-versions",
@@ -80,7 +108,7 @@ def test_rubric_version_can_be_approved_but_changes_create_new_version(client, u
         headers={"X-Actor-Id": users["recruiter"]["id"]},
     )
     assert approved.status_code == 200
-    assert approved.json()["status"] == "approved"
+    assert approved.json()["status"] == "APPROVED"
 
     replacement = client.post(
         f"/api/jobs/{draft_job['id']}/rubric-versions",
@@ -89,4 +117,3 @@ def test_rubric_version_can_be_approved_but_changes_create_new_version(client, u
     )
     assert replacement.status_code == 200
     assert replacement.json()["version_number"] == 2
-

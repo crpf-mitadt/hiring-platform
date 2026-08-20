@@ -3,21 +3,21 @@ from sqlalchemy import select
 
 from app.api.deps import ActorDep, DbDep
 from app.core.security import require_any_role
-from app.models import ApplicationStage, Role, ScreeningRun
+from app.models import ApplicationStage, HiringDecision, Role, ScreeningRun
 from app.schemas.applications import (
     ApplicationCreate,
     ApplicationRead,
     ApplicationTransitionRequest,
     CandidateApplicationStatus,
 )
-from app.schemas.screening import ScreeningRunRead
+from app.schemas.screening import ScreeningDossierRead, ScreeningRunRead
 from app.services.applications import (
     candidate_safe_status,
     get_application_for_actor,
     list_applications,
     submit_application,
 )
-from app.services.screening import InProcessScreeningRunner
+from app.services.screening import enqueue_screening_run, retry_screening_run
 from app.services.workflow import transition_application
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -67,10 +67,44 @@ def api_screening_runs(db: DbDep, actor: ActorDep, application_id: str):
 @router.post("/{application_id}/screening-runs", response_model=ScreeningRunRead)
 def api_start_screening(db: DbDep, actor: ActorDep, application_id: str):
     require_any_role(actor, {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN})
-    runner = InProcessScreeningRunner()
-    run = runner.enqueue_screening(db, application_id=application_id, actor_id=actor.id)
+    run = enqueue_screening_run(db, application_id=application_id, actor=actor)
     db.commit()
     return run
+
+
+@router.post("/screening-runs/{run_id}/retry", response_model=ScreeningRunRead)
+def api_retry_screening(db: DbDep, actor: ActorDep, run_id: str):
+    require_any_role(actor, {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN})
+    run = retry_screening_run(db, run_id=run_id, actor=actor)
+    db.commit()
+    return run
+
+
+@router.get("/{application_id}/screening-dossier", response_model=ScreeningDossierRead)
+def api_screening_dossier(db: DbDep, actor: ActorDep, application_id: str):
+    require_any_role(actor, {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN})
+    application = get_application_for_actor(db, actor, application_id)
+    runs = list(
+        db.scalars(
+            select(ScreeningRun)
+            .where(ScreeningRun.application_id == application.id)
+            .order_by(ScreeningRun.created_at.desc())
+        )
+    )
+    decisions = list(
+        db.scalars(
+            select(HiringDecision)
+            .where(HiringDecision.application_id == application.id)
+            .order_by(HiringDecision.timestamp.desc())
+        )
+    )
+    return {
+        "application_id": application.id,
+        "current_stage": application.current_stage,
+        "screening_runs": runs,
+        "stage_history": application.stage_history,
+        "decisions": decisions,
+    }
 
 
 @router.post("/{application_id}/shortlist", response_model=ApplicationRead)
@@ -117,4 +151,3 @@ def api_do_not_progress(
     )
     db.commit()
     return application
-

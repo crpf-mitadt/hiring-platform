@@ -1,4 +1,5 @@
 import pytest
+from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
@@ -7,6 +8,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture()
+def settings_tmp(monkeypatch, tmp_path):
+    get_settings.cache_clear()
+    monkeypatch.setenv("HIRING_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
+    monkeypatch.setenv("HIRING_SCREENING_OUTPUT_ROOT", str(tmp_path / "screening-output"))
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -27,7 +37,7 @@ def db_session():
 
 
 @pytest.fixture()
-def client(db_session):
+def client(db_session, settings_tmp):
     app = create_app()
 
     def override_get_db():
@@ -117,6 +127,16 @@ def draft_job(client, users, org):
 
 @pytest.fixture()
 def published_job(client, users, draft_job):
+    version = client.post(
+        f"/api/jobs/{draft_job['id']}/generate-rubric",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert version.status_code == 200, version.text
+    approved = client.post(
+        f"/api/rubric-versions/{version.json()['id']}/approve",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert approved.status_code == 200, approved.text
     response = client.post(
         f"/api/jobs/{draft_job['id']}/publish",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
@@ -125,8 +145,25 @@ def published_job(client, users, draft_job):
     return response.json()
 
 
+def upload_resume(client: TestClient, actor: dict, filename: str = "synthetic-resume.json") -> dict:
+    response = client.post(
+        "/api/documents/resumes",
+        headers={"X-Actor-Id": actor["id"]},
+        files={
+            "file": (
+                filename,
+                b'{"candidate_id":"synthetic-candidate","schema_version":"structured-resume-v1"}',
+                "application/json",
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def submit_application(client, users, published_job, actor_key="candidate") -> dict:
     actor = users[actor_key]
+    resume = upload_resume(client, actor)
     response = client.post(
         f"/api/applications/jobs/{published_job['id']}/apply",
         headers={"X-Actor-Id": actor["id"]},
@@ -138,11 +175,10 @@ def submit_application(client, users, published_job, actor_key="candidate") -> d
                 "phone": "0000000000",
                 "education_profile": {"highest_degree": "Synthetic degree"},
                 "work_experience_profile": {"summary": "Synthetic experience"},
-                "resume_document_ref": "synthetic-resume-ref",
+                "resume_document_id": resume["id"],
             },
-            "resume_document_ref": "synthetic-resume-ref",
+            "resume_document_id": resume["id"],
         },
     )
     assert response.status_code == 200, response.text
     return response.json()
-

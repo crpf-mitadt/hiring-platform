@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import applications, dashboard, health, jobs, users
+from app.api import applications, dashboard, documents, health, jobs, screening_jobs, users
 from app.core.config import get_settings
 from app.core.errors import DomainError
 
@@ -24,11 +24,12 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(users.router, prefix="/api")
+    app.include_router(documents.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(applications.router, prefix="/api")
+    app.include_router(screening_jobs.router, prefix="/api")
     app.include_router(dashboard.router, prefix="/api")
     return app
 
 
 app = create_app()
-
