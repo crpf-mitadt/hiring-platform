@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 !.env.tyrone.example
+.env.tyrone
+.env.tyrone.local
+.env.phase2-*
 .venv*/
 *.egg-info/
 __pycache__/

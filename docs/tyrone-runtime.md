@@ -28,7 +28,7 @@ Use `.env.tyrone.example` as a non-secret template. It documents:
 - `HIRING_DATABASE_URL`
 - `HIRING_SCREENING_PROVIDER=engine`
 - `HIRING_SCREENING_ENGINE_ROOT=/home/danish/projects/Hiring/hiring-screening-engine`
-- `HIRING_SCREENING_ENGINE_PYTHON=uv run python`
+- `HIRING_SCREENING_ENGINE_PYTHON="uv run python"`
 - `HIRING_SCREENING_CHANDRA_BASE_URL=http://127.0.0.1:18083`
 - `HIRING_SCREENING_CHANDRA_MODEL=chandra-ocr-2-q8`
 - `HIRING_SCREENING_GEMMA_BASE_URL=http://127.0.0.1:24181/v1`
@@ -40,6 +40,17 @@ Use `.env.tyrone.example` as a non-secret template. It documents:
 - `HIRING_SCREENING_PIPELINE_DEBUG_RAW_RESPONSES=false`
 
 `no-key` is the current local llama.cpp convention. The configuration still supports real secret values later.
+
+The backend loads `.env` from the platform repository root. On Tyrone, create the runtime file from the committed
+non-secret template:
+
+```bash
+cd /home/danish/projects/Hiring/hiring-platform
+cp .env.tyrone.example .env
+git check-ignore .env
+```
+
+Do not commit the generated `.env`.
 
 ## Engine Environment Bridge
 
