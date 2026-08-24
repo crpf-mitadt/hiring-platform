@@ -20,6 +20,9 @@ export default defineConfig({
       '/api': apiProxyTarget
     }
   },
+  optimizeDeps: {
+    exclude: ['frappe-ui']
+  },
   test: {
     environment: 'jsdom'
   }
