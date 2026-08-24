@@ -21,7 +21,9 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    exclude: ['frappe-ui']
+    esbuildOptions: {
+      external: ['~icons/lucide/*']
+    }
   },
   test: {
     environment: 'jsdom'
