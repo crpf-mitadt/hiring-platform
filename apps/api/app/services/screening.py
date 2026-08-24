@@ -252,7 +252,10 @@ class HiringScreeningEngineProvider:
         try:
             payload = json.loads(evaluation_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
-            raise EngineProviderError("ENGINE_OUTPUT_INVALID", "Engine evaluation artifact is not valid JSON") from error
+            raise EngineProviderError(
+                "ENGINE_OUTPUT_INVALID",
+                "Engine evaluation artifact is not valid JSON",
+            ) from error
         return ProviderExecutionResult(
             provider=self.name,
             provider_engine_version=self.engine_version,
