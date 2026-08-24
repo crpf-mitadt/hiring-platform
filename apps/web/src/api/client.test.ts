@@ -4,7 +4,7 @@ import { api } from './client'
 
 describe('api client screening integration routes', () => {
   it('posts file uploads without a json content-type header', async () => {
-    const fetchMock = vi.fn(async (_path: string, _init?: unknown) => ({
+    const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ id: 'document-1' }),
       statusText: 'OK'

@@ -1,3 +1,4 @@
+import process from 'node:process'
 import vue from '@vitejs/plugin-vue'
 import frappeui from 'frappe-ui/vite'
 import { defineConfig } from 'vite'
