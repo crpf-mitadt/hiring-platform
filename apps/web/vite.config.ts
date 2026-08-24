@@ -20,11 +20,6 @@ export default defineConfig({
       '/api': apiProxyTarget
     }
   },
-  optimizeDeps: {
-    esbuildOptions: {
-      external: ['~icons/lucide/*']
-    }
-  },
   test: {
     environment: 'jsdom'
   }
