@@ -80,6 +80,14 @@ This processes at most one pending screening job through the configured provider
 HIRING_SCREENING_PROVIDER=mock
 ```
 
+For a deployment-style long-lived process, omit `--once`:
+
+```bash
+PYTHONPATH=apps/api .venv/bin/python -m app.worker --poll-interval 2 --max-poll-interval 30
+```
+
+The long-lived worker is started by infrastructure or a supervisor. It is not a recruiter/reviewer UI action.
+
 The production-shaped engine adapter can be selected for future server integration testing:
 
 ```bash

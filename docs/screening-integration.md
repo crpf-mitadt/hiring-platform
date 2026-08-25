@@ -131,10 +131,15 @@ Real GPU/model screening must not block normal API requests.
 
 For this milestone:
 
-- `POST /api/applications/{application_id}/screening-runs` enqueues a pending run/job.
-- `POST /api/screening-jobs/run-next` processes one pending job for controlled validation.
-- `PYTHONPATH=apps/api .venv/bin/python -m app.worker --once` runs the same worker boundary from the command line in a
-  configured server/runtime environment.
+- Candidate application submission automatically enqueues a pending run/job after the application and stored resume are
+  persisted.
+- `POST /api/applications/{application_id}/screening-runs` remains available for authorized technical retry/operations
+  paths, not as the normal first-run product flow.
+- `POST /api/screening-jobs/run-next` processes one pending job for controlled validation and is not exposed in the
+  business UI.
+- `PYTHONPATH=apps/api .venv/bin/python -m app.worker --once` runs one job from the command line.
+- `PYTHONPATH=apps/api .venv/bin/python -m app.worker` runs continuously with bounded polling/backoff for deployed
+  environments.
 - Failed runs retain safe failure metadata and can be retried with
   `POST /api/applications/screening-runs/{run_id}/retry`.
 

@@ -11,8 +11,17 @@ Implemented roles:
 - Proctor / Assessment Reviewer
 - Hiring Administrator
 
-This milestone uses an explicit actor header (`X-Actor-Id`) rather than complex auth/session architecture.
-That keeps authorization boundaries testable while leaving room for real authentication later.
+The product API resolves authorization from an HttpOnly server-side session cookie:
+
+```text
+session cookie -> user session -> user -> roles -> authorization
+```
+
+Candidate registration creates candidate-only accounts. Staff accounts are provisioned by administrators; there is no
+public staff-role registration path.
+
+The legacy `X-Actor-Id` provider remains available only for development/test automation when explicitly enabled. It is
+not used by the product UI.
 
 The development actor provider is guarded by configuration:
 
