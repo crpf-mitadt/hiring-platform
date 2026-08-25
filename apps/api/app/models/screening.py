@@ -71,7 +71,7 @@ class ScreeningRun(Base, TimestampMixin):
     raw_result_ref: Mapped[str | None] = mapped_column(String(500))
     raw_result: Mapped[dict | None] = mapped_column(JSON)
 
-    application = relationship("Application")
+    application = relationship("Application", back_populates="screening_runs")
     rubric_version = relationship("JobRubricVersion")
     retry_of_run = relationship("ScreeningRun", remote_side=[id])
     jd_document = relationship("Document", foreign_keys=[jd_document_id])

@@ -68,14 +68,16 @@ def job_to_read(job) -> dict:
 
 
 @router.post("/schools", response_model=SchoolRead)
-def api_create_school(db: DbDep, data: SchoolCreate):
+def api_create_school(db: DbDep, actor: ActorDep, data: SchoolCreate):
+    require_any_role(actor, {Role.HR_RECRUITER, Role.HIRING_ADMIN})
     school = create_school(db, data)
     db.commit()
     return school
 
 
 @router.post("/departments", response_model=DepartmentRead)
-def api_create_department(db: DbDep, data: DepartmentCreate):
+def api_create_department(db: DbDep, actor: ActorDep, data: DepartmentCreate):
+    require_any_role(actor, {Role.HR_RECRUITER, Role.HIRING_ADMIN})
     department = create_department(db, data)
     db.commit()
     return department

@@ -23,7 +23,7 @@ from app.models.screening import (
     ScreeningRun,
     ScreeningRunStatus,
 )
-from app.models.user import Role, User, UserRole
+from app.models.user import Role, User, UserRole, UserSession
 
 __all__ = [
     "Application",
@@ -52,4 +52,5 @@ __all__ = [
     "ScreeningRunStatus",
     "User",
     "UserRole",
+    "UserSession",
 ]

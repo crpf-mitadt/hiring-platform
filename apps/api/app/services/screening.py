@@ -562,7 +562,16 @@ def _matching_existing_run(
         .where(ScreeningRun.application_id == application_id)
         .where(ScreeningRun.rubric_version_id == rubric_version_id)
         .where(ScreeningRun.resume_document_sha256 == resume_sha256)
-        .where(ScreeningRun.run_status.in_([ScreeningRunStatus.PENDING, ScreeningRunStatus.RUNNING]))
+        .where(
+            ScreeningRun.run_status.in_(
+                [
+                    ScreeningRunStatus.PENDING,
+                    ScreeningRunStatus.RUNNING,
+                    ScreeningRunStatus.COMPLETE,
+                    ScreeningRunStatus.COMPLETED,
+                ]
+            )
+        )
         .order_by(ScreeningRun.created_at.desc())
         .limit(1)
     )

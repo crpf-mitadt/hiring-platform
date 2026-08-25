@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 
 def submit_application(db: Session, actor: User, job_id: str, data: ApplicationCreate) -> Application:
+    from app.services.screening import enqueue_screening_run
+
     if Role.CANDIDATE not in role_values(actor):
         raise PermissionDenied("Only candidates can submit applications")
     job = db.get(Job, job_id)
@@ -43,6 +45,13 @@ def submit_application(db: Session, actor: User, job_id: str, data: ApplicationC
     if data.candidate.resume_document_ref:
         candidate.resume_document_ref = data.candidate.resume_document_ref
 
+    existing_application = db.scalar(
+        select(Application).where(Application.candidate_id == candidate.id).where(Application.job_id == job.id)
+    )
+    if existing_application is not None:
+        enqueue_screening_run(db, application_id=existing_application.id, actor=actor)
+        return existing_application
+
     application = Application(
         candidate=candidate,
         job=job,
@@ -66,6 +75,7 @@ def submit_application(db: Session, actor: User, job_id: str, data: ApplicationC
         new_stage=ApplicationStage.SCREENING_PENDING,
         system_transition=True,
     )
+    enqueue_screening_run(db, application_id=application.id, actor=actor)
     return application
 
 
@@ -115,6 +125,27 @@ def candidate_safe_status(application: Application) -> dict:
         "resume_filename": (
             application.resume_document.original_filename if application.resume_document else None
         ),
+    }
+
+
+def application_read_payload(application: Application) -> dict:
+    latest_run = application.screening_runs[0] if application.screening_runs else None
+    return {
+        "id": application.id,
+        "candidate_id": application.candidate_id,
+        "job_id": application.job_id,
+        "submitted_at": application.submitted_at,
+        "resume_document_ref": application.resume_document_ref,
+        "resume_document_id": application.resume_document_id,
+        "current_stage": application.current_stage,
+        "candidate": application.candidate,
+        "job_title": application.job.title,
+        "job_department_id": application.job.department_id,
+        "job_location": application.job.location,
+        "screening_status": latest_run.run_status.value if latest_run else None,
+        "screening_score": latest_run.score if latest_run else None,
+        "screening_eligibility": latest_run.eligibility if latest_run else None,
+        "evidence_completeness": latest_run.evidence_completeness if latest_run else None,
     }
 
 

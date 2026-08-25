@@ -1,11 +1,15 @@
 import enum
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.screening import ScreeningRun
 
 
 class JobStatus(str, enum.Enum):
@@ -166,6 +170,9 @@ class Application(Base, TimestampMixin):
     resume_document = relationship("Document", foreign_keys=[resume_document_id])
     stage_history: Mapped[list["ApplicationStageHistory"]] = relationship(
         back_populates="application", cascade="all, delete-orphan", order_by="ApplicationStageHistory.timestamp"
+    )
+    screening_runs: Mapped[list["ScreeningRun"]] = relationship(
+        back_populates="application", order_by="ScreeningRun.created_at.desc()"
     )
 
 

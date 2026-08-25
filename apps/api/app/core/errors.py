@@ -10,10 +10,13 @@ class PermissionDenied(DomainError):
     status_code = 403
 
 
+class AuthenticationRequired(DomainError):
+    status_code = 401
+
+
 class NotFound(DomainError):
     status_code = 404
 
 
 class InvalidTransition(DomainError):
     status_code = 409
-

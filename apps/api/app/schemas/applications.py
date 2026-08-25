@@ -42,6 +42,14 @@ class ApplicationRead(ApiModel):
     resume_document_ref: str | None
     resume_document_id: str | None
     current_stage: ApplicationStage
+    candidate: CandidateRead | None = None
+    job_title: str | None = None
+    job_department_id: str | None = None
+    job_location: str | None = None
+    screening_status: str | None = None
+    screening_score: float | None = None
+    screening_eligibility: str | None = None
+    evidence_completeness: float | None = None
 
 
 class CandidateApplicationStatus(ApiModel):

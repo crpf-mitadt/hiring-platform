@@ -12,6 +12,7 @@ from app.schemas.applications import (
 )
 from app.schemas.screening import ScreeningDossierRead, ScreeningRunRead
 from app.services.applications import (
+    application_read_payload,
     candidate_safe_status,
     get_application_for_actor,
     list_applications,
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/applications", tags=["applications"])
 def api_apply(db: DbDep, actor: ActorDep, job_id: str, data: ApplicationCreate):
     application = submit_application(db, actor, job_id, data)
     db.commit()
-    return application
+    return application_read_payload(application)
 
 
 @router.get("", response_model=list[ApplicationRead])
@@ -37,7 +38,11 @@ def api_list_applications(
     job_id: str | None = None,
     stage: ApplicationStage | None = None,
 ):
-    return list_applications(db, actor, job_id=job_id, stage=stage)
+    require_any_role(actor, {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN})
+    return [
+        application_read_payload(application)
+        for application in list_applications(db, actor, job_id=job_id, stage=stage)
+    ]
 
 
 @router.get("/mine", response_model=list[CandidateApplicationStatus])
@@ -48,7 +53,8 @@ def api_my_applications(db: DbDep, actor: ActorDep):
 
 @router.get("/{application_id}", response_model=ApplicationRead)
 def api_get_application(db: DbDep, actor: ActorDep, application_id: str):
-    return get_application_for_actor(db, actor, application_id)
+    require_any_role(actor, {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN})
+    return application_read_payload(get_application_for_actor(db, actor, application_id))
 
 
 @router.get("/{application_id}/screening", response_model=list[ScreeningRunRead])
@@ -120,7 +126,7 @@ def api_shortlist(
         remarks=data.remarks,
     )
     db.commit()
-    return application
+    return application_read_payload(application)
 
 
 @router.post("/{application_id}/hold", response_model=ApplicationRead)
@@ -134,7 +140,7 @@ def api_hold(db: DbDep, actor: ActorDep, application_id: str, data: ApplicationT
         remarks=data.remarks,
     )
     db.commit()
-    return application
+    return application_read_payload(application)
 
 
 @router.post("/{application_id}/do-not-progress", response_model=ApplicationRead)
@@ -150,4 +156,4 @@ def api_do_not_progress(
         remarks=data.remarks,
     )
     db.commit()
-    return application
+    return application_read_payload(application)
