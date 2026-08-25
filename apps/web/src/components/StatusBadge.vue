@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Badge } from 'frappe-ui'
 
 const props = defineProps<{ value: string }>()
 
-const tone = computed(() => {
+const theme = computed(() => {
   if (['PUBLISHED', 'SCREENING_REVIEW', 'SHORTLISTED_FOR_ASSESSMENT', 'COMPLETE', 'COMPLETED'].includes(props.value)) {
-    return 'good'
+    return 'green'
   }
-  if (['SCREENING_HOLD', 'DRAFT', 'REVIEW'].includes(props.value)) return 'warn'
-  if (['CLOSED', 'NOT_PROGRESSED_AFTER_SCREENING', 'FAILED'].includes(props.value)) return 'stop'
-  return 'neutral'
+  if (['SCREENING_HOLD', 'DRAFT', 'REVIEW', 'PENDING', 'RUNNING', 'SCREENING_PENDING'].includes(props.value)) return 'amber'
+  if (['CLOSED', 'NOT_PROGRESSED_AFTER_SCREENING', 'FAILED'].includes(props.value)) return 'red'
+  return 'gray'
 })
+
+const label = computed(() => props.value.replaceAll('_', ' '))
 </script>
 
 <template>
-  <span class="status-badge" :class="`status-badge--${tone}`">{{ value.replaceAll('_', ' ') }}</span>
+  <Badge :label="label" :theme="theme" variant="subtle" />
 </template>

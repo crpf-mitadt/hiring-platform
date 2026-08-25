@@ -16,13 +16,33 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('./api/client', () => ({ api: apiMock }))
 vi.mock('frappe-ui', () => ({
-  Badge: { template: '<span class="mock-badge"><slot /></span>' },
+  Alert: { props: ['title', 'description'], template: '<div><strong>{{ title }}</strong><p>{{ description }}</p></div>' },
+  Avatar: { props: ['label'], template: '<span>{{ label }}</span>' },
+  Badge: { props: ['label'], template: '<span class="mock-badge">{{ label }}<slot /></span>' },
+  Breadcrumbs: { props: ['items'], template: '<nav><span v-for="item in items" :key="item.label">{{ item.label }}</span></nav>' },
   Button: { template: `<button @click="$emit('click')"><slot /></button>` },
+  DesktopShell: { template: '<div><slot name="sidebar" /><slot /></div>' },
+  Divider: { template: '<hr />' },
+  ErrorMessage: { props: ['message'], template: '<p>{{ message }}</p>' },
   FormControl: {
     props: ['modelValue', 'label'],
     emits: ['update:modelValue'],
     template:
       `<label><span>{{ label }}</span><input :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" /></label>`
+  },
+  LoadingText: { template: '<div>Loading</div>' },
+  MobileNav: { template: '<nav><slot /></nav>' },
+  MobileNavItem: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}</button>` },
+  MobileShell: { template: '<div><slot /><slot name="nav" /></div>' },
+  PageHeader: { template: '<header><slot /></header>' },
+  Sidebar: { template: '<aside><slot /></aside>' },
+  SidebarHeader: { props: ['title', 'subtitle'], template: '<div><strong>{{ title }}</strong><small>{{ subtitle }}</small></div>' },
+  SidebarItem: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}<slot name="suffix" /></button>` },
+  SidebarLabel: { template: '<p><slot /></p>' },
+  TabButtons: {
+    props: ['modelValue', 'options'],
+    emits: ['update:modelValue'],
+    template: `<div><button v-for="option in options" :key="option.value" @click="$emit('update:modelValue', option.value)">{{ option.label }}</button></div>`
   },
   FrappeUI: { install: vi.fn() },
   Textarea: {
@@ -30,7 +50,17 @@ vi.mock('frappe-ui', () => ({
     emits: ['update:modelValue'],
     template:
       `<label><span>{{ label }}</span><textarea :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" /></label>`
-  }
+  },
+  Tooltip: { template: '<span><slot /></span>' },
+  dialog: { confirm: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() }
+}))
+vi.mock('frappe-ui/list', () => ({
+  List: { template: '<div><slot /></div>' },
+  ListCell: { template: '<div><slot /></div>' },
+  ListHeader: { template: '<div><slot /></div>' },
+  ListHeaderCell: { template: '<div><slot /></div>' },
+  ListRow: { template: `<button @click="$emit('click')"><slot /></button>` }
 }))
 
 const publishedJob = {

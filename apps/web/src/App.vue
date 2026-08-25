@@ -1,19 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Badge, Button, FormControl, Textarea } from 'frappe-ui'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  Briefcase,
-  CalendarClock,
-  CheckCircle2,
-  ClipboardCheck,
-  FileSearch,
-  GraduationCap,
-  LayoutDashboard,
-  LogOut,
-  Search,
-  UserRound,
-  UsersRound
-} from 'lucide-vue-next'
+  Alert,
+  Avatar,
+  Badge,
+  Breadcrumbs,
+  Button,
+  DesktopShell,
+  Divider,
+  ErrorMessage,
+  FormControl,
+  LoadingText,
+  MobileNav,
+  MobileNavItem,
+  MobileShell,
+  PageHeader,
+  Sidebar,
+  SidebarHeader,
+  SidebarItem,
+  SidebarLabel,
+  TabButtons,
+  Textarea,
+  Tooltip,
+  dialog,
+  toast
+} from 'frappe-ui'
+import { List, ListCell, ListHeader, ListHeaderCell, ListRow } from 'frappe-ui/list'
 import StatusBadge from './components/StatusBadge.vue'
 import { api } from './api/client'
 import type {
@@ -69,6 +81,7 @@ const activeApplicationTab = ref<'overview' | 'screening' | 'assessment' | 'inte
 const resumeFile = ref<File | null>(null)
 const jdFile = ref<File | null>(null)
 const remarks = ref('')
+const isCompactViewport = ref(globalThis.innerWidth < 640)
 
 const publicFilter = reactive({ search: '', department: '', location: '', employment_type: '' })
 const staffJobFilter = reactive({ search: '', status: '', location: '' })
@@ -114,31 +127,114 @@ const staffFilteredApplications = computed(() =>
 )
 
 const staffNav = computed(() => [
-  { route: 'staffDashboard' as const, label: 'Dashboard', icon: LayoutDashboard, count: null },
-  { route: 'staffJobs' as const, label: 'Jobs', icon: Briefcase, count: dashboard.value.open_jobs ?? null },
+  { route: 'staffDashboard' as const, label: 'Dashboard', icon: 'lucide-layout-dashboard', count: null },
+  { route: 'staffJobs' as const, label: 'Jobs', icon: 'lucide-briefcase-business', count: dashboard.value.open_jobs ?? null },
   {
     route: 'staffApplications' as const,
     label: 'Applications',
-    icon: ClipboardCheck,
+    icon: 'lucide-clipboard-check',
     count: dashboard.value.applications_received ?? null
   },
   {
     route: 'staffScreeningReview' as const,
     label: 'Screening Review',
-    icon: FileSearch,
+    icon: 'lucide-file-search',
     count: dashboard.value.screening_reviews_pending ?? null
   },
-  { route: 'staffAssessments' as const, label: 'Assessments', icon: CheckCircle2, count: null },
-  { route: 'staffInterviews' as const, label: 'Interviews', icon: CalendarClock, count: null },
-  { route: 'staffFinalDecisions' as const, label: 'Final Decisions', icon: UsersRound, count: null }
+  { route: 'staffAssessments' as const, label: 'Assessments', icon: 'lucide-circle-check', count: null },
+  { route: 'staffInterviews' as const, label: 'Interviews', icon: 'lucide-calendar-clock', count: null },
+  { route: 'staffFinalDecisions' as const, label: 'Final Decisions', icon: 'lucide-users-round', count: null }
 ])
 
 const candidateNav = [
-  { route: 'candidateJobs' as const, label: 'Jobs', icon: Briefcase },
-  { route: 'candidateApplications' as const, label: 'My Applications', icon: ClipboardCheck },
-  { route: 'candidateAssessments' as const, label: 'Assessments', icon: CheckCircle2 },
-  { route: 'candidateInterviews' as const, label: 'Interviews', icon: CalendarClock },
-  { route: 'candidateProfile' as const, label: 'Profile', icon: UserRound }
+  { route: 'candidateJobs' as const, label: 'Jobs', icon: 'lucide-briefcase-business' },
+  { route: 'candidateApplications' as const, label: 'My Applications', icon: 'lucide-clipboard-check' },
+  { route: 'candidateAssessments' as const, label: 'Assessments', icon: 'lucide-circle-check' },
+  { route: 'candidateInterviews' as const, label: 'Interviews', icon: 'lucide-calendar-clock' },
+  { route: 'candidateProfile' as const, label: 'Profile', icon: 'lucide-user-round' }
+]
+
+const candidateRouteTitles: Partial<Record<RouteName, string>> = {
+  candidateJobs: 'Jobs',
+  candidateApplications: 'My applications',
+  candidateAssessments: 'Assessments',
+  candidateInterviews: 'Interviews',
+  candidateProfile: 'Profile'
+}
+
+const staffRouteTitles: Partial<Record<RouteName, string>> = {
+  staffDashboard: 'Recruitment dashboard',
+  staffJobs: 'Jobs',
+  staffJobWorkspace: 'Job workspace',
+  staffApplications: 'Applications',
+  staffApplicationWorkspace: 'Application workspace',
+  staffScreeningReview: 'Screening review',
+  staffAssessments: 'Assessments',
+  staffInterviews: 'Interviews',
+  staffFinalDecisions: 'Final decisions'
+}
+
+const candidatePageTitle = computed(() => candidateRouteTitles[route.value] ?? 'Candidate portal')
+const staffPageTitle = computed(() => staffRouteTitles[route.value] ?? 'Hiring Platform')
+
+const jobStatusOptions = [
+  { label: 'All statuses', value: '' },
+  { label: 'Draft', value: 'DRAFT' },
+  { label: 'Published', value: 'PUBLISHED' },
+  { label: 'Closed', value: 'CLOSED' }
+]
+
+const employmentTypeOptions = computed(() => [
+  { label: 'All employment types', value: '' },
+  ...[...new Set(publicJobs.value.map((job) => job.employment_type))].map((value) => ({ label: value, value }))
+])
+
+const locationOptions = computed(() => [
+  { label: 'All locations', value: '' },
+  ...[...new Set(publicJobs.value.map((job) => job.location))].map((value) => ({ label: value, value }))
+])
+
+const jobFilterOptions = computed(() => [
+  { label: 'All jobs', value: '' },
+  ...staffJobs.value.map((job) => ({ label: job.title, value: job.id }))
+])
+
+const applicationStageOptions = computed(() => [
+  { label: 'All stages', value: '' },
+  ...applicationStages.map((stage) => ({ label: stageLabel(stage), value: stage }))
+])
+
+const publicJobListColumns = computed(() =>
+  isCompactViewport.value ? ['minmax(0,1fr)'] : ['minmax(0,1fr)', '11rem', '8rem']
+)
+const candidateJobListColumns = computed(() =>
+  isCompactViewport.value ? ['minmax(0,1fr)'] : ['minmax(0,1fr)', '10rem', '8rem']
+)
+const candidateApplicationListColumns = computed(() =>
+  isCompactViewport.value ? ['minmax(0,1fr)'] : ['minmax(0,1fr)', '10rem', '12rem']
+)
+const staffJobListColumns = computed(() =>
+  isCompactViewport.value ? ['minmax(0,1fr)'] : ['minmax(16rem,1.4fr)', '10rem', '6rem', '9rem', '8rem']
+)
+const staffApplicationListColumns = computed(() =>
+  isCompactViewport.value
+    ? ['minmax(0,1fr)']
+    : ['minmax(14rem,1.3fr)', 'minmax(12rem,1fr)', '8rem', '10rem', '7rem', '13rem']
+)
+
+const jobTabOptions = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'rubric', label: 'JD and rubric' },
+  { value: 'applications', label: 'Applications' },
+  { value: 'activity', label: 'Activity' }
+]
+
+const applicationTabOptions = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'screening', label: 'Screening' },
+  { value: 'assessment', label: 'Assessment' },
+  { value: 'interview', label: 'Interview' },
+  { value: 'history', label: 'History' }
 ]
 
 const applicationStages: ApplicationStage[] = [
@@ -224,10 +320,14 @@ async function run<T>(task: () => Promise<T>, success?: string): Promise<T | nul
   errorMessage.value = ''
   try {
     const result = await task()
-    if (success) message.value = success
+    if (success) {
+      message.value = success
+      toast.success(success)
+    }
     return result
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Request failed. Please try again.'
+    toast.error(errorMessage.value)
     return null
   } finally {
     loading.value = false
@@ -363,8 +463,17 @@ async function publishJob() {
 
 async function closeJob() {
   if (!selectedJob.value) return
-  const job = await run(() => api.closeJob(selectedJob.value!.id), 'Job closed.')
-  if (job) selectedJob.value = job
+  dialog.confirm({
+    title: 'Close this job?',
+    message: 'Candidates will no longer see this opening in the public careers portal.',
+    theme: 'red',
+    confirmLabel: 'Close job',
+    onConfirm: async ({ close }) => {
+      const job = await run(() => api.closeJob(selectedJob.value!.id), 'Job closed.')
+      if (job) selectedJob.value = job
+      close()
+    }
+  })
 }
 
 async function openStaffJob(jobId: string) {
@@ -450,17 +559,28 @@ async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress
   if (!selectedApplication.value) return
   if (!remarks.value.trim()) {
     errorMessage.value = 'Add remarks before recording this decision.'
+    toast.error(errorMessage.value)
     return
   }
-  const updated = await run(
-    () => api.transition(selectedApplication.value!.id, action, remarks.value),
-    'Decision recorded.'
-  )
-  if (updated) {
-    selectedApplication.value = updated
-    remarks.value = ''
-    await openApplicationWorkspace(updated.id)
-  }
+  const destructive = action === 'do-not-progress'
+  dialog.confirm({
+    title: destructive ? 'Do not progress this candidate?' : 'Record screening decision?',
+    message: 'This decision is saved to the application history with your remarks.',
+    theme: destructive ? 'red' : undefined,
+    confirmLabel: destructive ? 'Do not progress' : 'Record decision',
+    onConfirm: async ({ close }) => {
+      const updated = await run(
+        () => api.transition(selectedApplication.value!.id, action, remarks.value),
+        'Decision recorded.'
+      )
+      if (updated) {
+        selectedApplication.value = updated
+        remarks.value = ''
+        await openApplicationWorkspace(updated.id)
+      }
+      close()
+    }
+  })
 }
 
 async function retryLatestScreening() {
@@ -508,260 +628,289 @@ function percent(value: number | null | undefined) {
   return `${Math.round(value * 100)}%`
 }
 
-onMounted(bootstrap)
+function updateViewportState() {
+  isCompactViewport.value = globalThis.innerWidth < 640
+}
+
+onMounted(() => {
+  updateViewportState()
+  globalThis.addEventListener('resize', updateViewportState)
+  void bootstrap()
+})
+
+onBeforeUnmount(() => {
+  globalThis.removeEventListener('resize', updateViewportState)
+})
 </script>
 
 <template>
-  <main class="product-root">
-    <section v-if="route === 'publicHome' || route === 'publicJobs' || route === 'publicJobDetail' || route === 'login' || route === 'register'" class="public-shell">
-      <header class="public-nav">
-        <button class="brand-button" type="button" @click="navigate('publicHome')">
-          <span class="brand-mark">HP</span>
-          <span>
-            <strong>University Careers</strong>
-            <small>Hiring Platform</small>
-          </span>
-        </button>
-        <nav>
-          <Button variant="ghost" @click="navigate('publicJobs')">Open positions</Button>
-          <Button v-if="!currentUser" variant="subtle" @click="navigate('login')">Sign in</Button>
-          <Button v-else-if="isCandidate" variant="subtle" @click="navigate('candidateApplications')">My applications</Button>
-          <Button v-else variant="subtle" @click="navigate('staffDashboard')">Staff app</Button>
-        </nav>
-      </header>
+  <main class="min-h-screen bg-surface-base text-ink-gray-9">
+    <section
+      v-if="route === 'publicHome' || route === 'publicJobs' || route === 'publicJobDetail' || route === 'login' || route === 'register'"
+      class="min-h-screen"
+    >
+      <PageHeader>
+        <div class="flex min-w-0 items-center gap-2">
+          <Button variant="ghost" theme="gray" @click="navigate('publicHome')">
+            <span class="flex items-center gap-2">
+              <Avatar label="Hiring Platform" size="md" />
+              <span class="flex flex-col text-left leading-none">
+                <span class="text-base-medium text-ink-gray-8">University Careers</span>
+                <span class="mt-0.5 text-sm text-ink-gray-5">Hiring Platform</span>
+              </span>
+            </span>
+          </Button>
+        </div>
+        <div class="flex items-center gap-2">
+          <Button label="Open positions" variant="ghost" theme="gray" @click="navigate('publicJobs')" />
+          <Button v-if="!currentUser" label="Sign in" variant="solid" theme="gray" @click="navigate('login')" />
+          <Button
+            v-else-if="isCandidate"
+            label="My applications"
+            variant="subtle"
+            theme="gray"
+            @click="navigate('candidateApplications')"
+          />
+          <Button v-else label="Staff app" variant="subtle" theme="gray" @click="navigate('staffDashboard')" />
+        </div>
+      </PageHeader>
 
-      <section v-if="route === 'publicHome' || route === 'publicJobs'" class="careers-hero">
-        <div>
-          <p class="eyebrow">University recruitment</p>
-          <h1>Find your next opportunity</h1>
-          <p class="hero-copy">
-            Browse published faculty, academic operations and technology roles. Applications are reviewed by people,
-            with AI-assisted screening used only as decision support.
-          </p>
-          <div class="search-band">
-            <Search :size="18" />
-            <FormControl v-model="publicFilter.search" placeholder="Search jobs, departments or locations" @keyup.enter="loadPublicJobs" />
-            <Button @click="loadPublicJobs">Search</Button>
-          </div>
-          <div class="filter-row">
-            <select v-model="publicFilter.location" class="select-control">
-              <option value="">All locations</option>
-              <option v-for="location in [...new Set(publicJobs.map((job) => job.location))]" :key="location">{{ location }}</option>
-            </select>
-            <select v-model="publicFilter.employment_type" class="select-control">
-              <option value="">All employment types</option>
-              <option v-for="type in [...new Set(publicJobs.map((job) => job.employment_type))]" :key="type">{{ type }}</option>
-            </select>
-          </div>
-        </div>
-        <aside class="hero-panel">
-          <GraduationCap :size="28" />
-          <strong>{{ publicFilteredJobs.length }}</strong>
-          <span>published openings</span>
-        </aside>
-      </section>
+      <div class="mx-auto w-full max-w-[940px] px-3 py-6 sm:px-5">
+        <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
 
-      <section v-if="route === 'publicHome' || route === 'publicJobs'" class="public-content">
-        <div class="section-heading">
-          <div>
-            <h2>Open positions</h2>
-            <p>Only published jobs are listed here.</p>
-          </div>
-        </div>
-        <div v-if="loading" class="skeleton-list">
-          <div v-for="item in 3" :key="item" class="skeleton-row" />
-        </div>
-        <div v-else-if="publicFilteredJobs.length" class="job-list">
-          <article v-for="job in publicFilteredJobs" :key="job.id" class="job-row">
-            <div>
-              <h3>{{ job.title }}</h3>
-              <p>{{ job.designation }} · {{ job.location }} · {{ job.employment_type }}</p>
+        <section v-if="route === 'publicHome' || route === 'publicJobs'" class="space-y-6">
+          <div class="space-y-4 py-8 sm:py-10">
+            <Badge label="University recruitment" variant="subtle" theme="gray" />
+            <div class="space-y-3">
+              <h1 class="max-w-[760px] text-4xl font-semibold text-ink-gray-9 sm:text-5xl">
+                Find your next opportunity
+              </h1>
+              <p class="max-w-[720px] text-p-lg text-ink-gray-7">
+                Browse published faculty, academic operations and technology roles. Applications are reviewed by people,
+                with AI-assisted screening used only as decision support.
+              </p>
             </div>
-            <div class="row-actions">
-              <Badge>{{ job.vacancy_count }} opening{{ job.vacancy_count === 1 ? '' : 's' }}</Badge>
-              <Button @click="openPublicJob(job)">View opening</Button>
+            <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <FormControl
+                v-model="publicFilter.search"
+                label="Search jobs"
+                placeholder="Search jobs, departments or locations"
+                @keyup.enter="loadPublicJobs"
+              />
+              <Button class="self-end" label="Search" icon-left="lucide-search" variant="solid" theme="gray" @click="loadPublicJobs" />
             </div>
-          </article>
-        </div>
-        <p v-else class="empty-state">No open positions match your filters.</p>
-      </section>
-
-      <section v-if="route === 'publicJobDetail' && selectedJob" class="job-detail public-content">
-        <button class="back-link" type="button" @click="navigate('publicJobs')">Back to jobs</button>
-        <div class="detail-hero">
-          <div>
-            <p class="eyebrow">Published opening</p>
-            <h1>{{ selectedJob.title }}</h1>
-            <p>{{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}</p>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <FormControl v-model="publicFilter.location" type="select" label="Location" :options="locationOptions" />
+              <FormControl
+                v-model="publicFilter.employment_type"
+                type="select"
+                label="Employment type"
+                :options="employmentTypeOptions"
+              />
+            </div>
           </div>
-          <Button @click="openCandidateApply(selectedJob)">Apply now</Button>
-        </div>
-        <div class="detail-grid">
-          <article>
-            <h2>About the role</h2>
-            <p>{{ selectedJob.description }}</p>
-          </article>
-          <aside>
-            <span>Vacancies</span>
-            <strong>{{ selectedJob.vacancy_count }}</strong>
-            <span>Application window</span>
-            <strong>{{ formatDate(selectedJob.application_start) }} - {{ formatDate(selectedJob.application_end) }}</strong>
-          </aside>
-        </div>
-        <form v-if="currentUser && isCandidate" class="application-form" @submit.prevent="submitApplication">
-          <h2>Apply for {{ selectedJob.title }}</h2>
-          <FormControl v-model="applyForm.full_name" label="Full name" required />
-          <FormControl v-model="applyForm.email" label="Email" type="email" required />
-          <FormControl v-model="applyForm.phone" label="Phone" />
-          <label class="upload-field">
-            <span>Resume</span>
-            <input type="file" accept=".pdf,.docx,.json" @change="setResumeFile">
-          </label>
-          <Button type="submit" :loading="loading">Submit application</Button>
-        </form>
-      </section>
 
-      <section v-if="route === 'login'" class="auth-panel">
-        <h1>Sign in</h1>
-        <p>Use your candidate or university staff account.</p>
-        <form @submit.prevent="login">
-          <FormControl v-model="loginForm.email" label="Email" type="email" required />
-          <FormControl v-model="loginForm.password" label="Password" type="password" required />
-          <Button type="submit" :loading="loading">Sign in</Button>
-        </form>
-        <button class="back-link" type="button" @click="navigate('register')">Create a candidate account</button>
-      </section>
+          <Divider />
 
-      <section v-if="route === 'register'" class="auth-panel">
-        <h1>Create candidate account</h1>
-        <p>Staff accounts are provisioned by university administrators.</p>
-        <form @submit.prevent="register">
-          <FormControl v-model="registerForm.full_name" label="Full name" required />
-          <FormControl v-model="registerForm.email" label="Email" type="email" required />
-          <FormControl v-model="registerForm.password" label="Password" type="password" required />
-          <Button type="submit" :loading="loading">Create account</Button>
-        </form>
-      </section>
-    </section>
-
-    <section v-else-if="isCandidate" class="app-shell">
-      <aside class="sidebar candidate-sidebar">
-        <div class="brand">
-          <span class="brand-mark">HP</span>
-          <div>
-            <strong>Candidate Portal</strong>
-            <small>{{ currentUser?.full_name }}</small>
-          </div>
-        </div>
-        <nav class="nav-list">
-          <button v-for="item in candidateNav" :key="item.route" class="nav-item" :class="{ active: route === item.route }" type="button" @click="navigate(item.route)">
-            <component :is="item.icon" :size="17" />
-            {{ item.label }}
-          </button>
-        </nav>
-        <Button variant="ghost" @click="logout"><LogOut :size="16" /> Sign out</Button>
-      </aside>
-      <section class="workspace">
-        <section v-if="route === 'candidateJobs'" class="page-section">
-          <div class="page-header">
-            <div><h1>Jobs</h1><p>Published openings accepting applications.</p></div>
-          </div>
-          <div class="job-list">
-            <article v-for="job in publicFilteredJobs" :key="job.id" class="job-row">
-              <div><h3>{{ job.title }}</h3><p>{{ job.designation }} · {{ job.location }}</p></div>
-              <Button @click="openPublicJob(job)">View and apply</Button>
-            </article>
-          </div>
-        </section>
-        <section v-if="route === 'candidateApplications'" class="page-section">
-          <div class="page-header"><div><h1>My applications</h1><p>Candidate-safe status only.</p></div></div>
-          <div v-if="myApplications.length" class="application-cards">
-            <article v-for="application in myApplications" :key="application.id" class="application-card">
+          <section class="space-y-3">
+            <div class="flex items-center justify-between gap-3">
               <div>
-                <h3>{{ application.job_title }}</h3>
-                <p>Applied {{ formatDate(application.submitted_at) }}</p>
+                <h2 class="text-2xl font-semibold text-ink-gray-8">Open positions</h2>
+                <p class="mt-1 text-p-base text-ink-gray-5">Only published jobs are listed here.</p>
               </div>
-              <StatusBadge :value="application.status_label" />
-              <ol class="candidate-steps">
-                <li class="done">Submitted</li>
-                <li :class="{ done: application.status_label !== 'Application Received' }">Screening</li>
-                <li>Department review</li>
-                <li :class="{ done: application.status_label === 'Assessment' }">Assessment</li>
-                <li>Interview</li>
-                <li>Decision</li>
-              </ol>
-            </article>
+              <Badge :label="`${publicFilteredJobs.length} open`" variant="subtle" theme="gray" />
+            </div>
+            <LoadingText v-if="loading && !publicFilteredJobs.length" :lines="4" />
+            <List v-else-if="publicFilteredJobs.length" :columns="publicJobListColumns" :row-height="60">
+              <ListHeader class="hidden sm:grid">
+                <ListHeaderCell>Position</ListHeaderCell>
+                <ListHeaderCell>Location</ListHeaderCell>
+                <ListHeaderCell>Action</ListHeaderCell>
+              </ListHeader>
+              <ListRow v-for="job in publicFilteredJobs" :key="job.id" :value="job.id" @click="openPublicJob(job)">
+                <ListCell>
+                  <div class="min-w-0">
+                    <div class="truncate text-base-medium text-ink-gray-8">{{ job.title }}</div>
+                    <div class="mt-1 truncate text-sm text-ink-gray-5">
+                      {{ job.designation }} · {{ job.employment_type }} · {{ job.vacancy_count }} opening{{ job.vacancy_count === 1 ? '' : 's' }}
+                    </div>
+                    <div class="mt-1 text-sm text-ink-gray-5 sm:hidden">{{ job.location }}</div>
+                  </div>
+                </ListCell>
+                <ListCell class="hidden sm:flex"><span class="text-sm text-ink-gray-7">{{ job.location }}</span></ListCell>
+                <ListCell class="hidden sm:flex">
+                  <Button label="View" variant="ghost" theme="gray" icon-right="lucide-arrow-right" @click.stop="openPublicJob(job)" />
+                </ListCell>
+              </ListRow>
+            </List>
+            <div v-else class="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <div class="rounded-full bg-surface-gray-2 p-3 text-ink-gray-5">
+                <span class="lucide-briefcase-business size-6" aria-hidden="true" />
+              </div>
+              <p class="text-base text-ink-gray-7">No open positions match your filters.</p>
+              <Button label="Clear filters" variant="subtle" theme="gray" @click="Object.assign(publicFilter, { search: '', location: '', employment_type: '' })" />
+            </div>
+          </section>
+        </section>
+
+        <section v-if="route === 'publicJobDetail' && selectedJob" class="space-y-6">
+          <Breadcrumbs :items="[{ label: 'Open positions', route: '/jobs' }, { label: selectedJob.title }]" />
+          <div class="flex items-start justify-between gap-4">
+            <div class="space-y-2">
+              <Badge label="Published opening" variant="subtle" theme="green" />
+              <h1 class="text-3xl font-semibold text-ink-gray-9">{{ selectedJob.title }}</h1>
+              <p class="text-p-base text-ink-gray-6">
+                {{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}
+              </p>
+            </div>
+            <Button label="Apply now" variant="solid" theme="gray" icon-left="lucide-send" @click="openCandidateApply(selectedJob)" />
           </div>
-          <p v-else class="empty-state">No applications yet.</p>
+          <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+            <section class="space-y-3">
+              <h2 class="text-lg-semibold text-ink-gray-8">About the role</h2>
+              <p class="max-w-[770px] text-p-base text-ink-gray-8">{{ selectedJob.description }}</p>
+            </section>
+            <aside class="space-y-4 border-l border-outline-gray-1 pl-5">
+              <div><div class="text-sm text-ink-gray-5">Vacancies</div><div class="text-base-medium text-ink-gray-8">{{ selectedJob.vacancy_count }}</div></div>
+              <div><div class="text-sm text-ink-gray-5">Application window</div><div class="text-base-medium text-ink-gray-8">{{ formatDate(selectedJob.application_start) }} - {{ formatDate(selectedJob.application_end) }}</div></div>
+            </aside>
+          </div>
+          <form v-if="currentUser && isCandidate" class="max-w-xl space-y-4 pt-2" @submit.prevent="submitApplication">
+            <h2 class="text-lg-semibold text-ink-gray-8">Apply for {{ selectedJob.title }}</h2>
+            <FormControl v-model="applyForm.full_name" label="Full name" required />
+            <FormControl v-model="applyForm.email" label="Email" type="email" required />
+            <FormControl v-model="applyForm.phone" label="Phone" description="Used only for recruitment coordination." />
+            <label class="block space-y-1 text-sm text-ink-gray-6">
+              <span>Resume <span class="text-ink-red-6">*</span></span>
+              <input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5 text-base text-ink-gray-8" type="file" accept=".pdf,.docx,.json" @change="setResumeFile">
+            </label>
+            <div class="flex justify-end gap-2 pt-2">
+              <Button label="Submit application" variant="solid" theme="gray" type="submit" :loading="loading" />
+            </div>
+          </form>
         </section>
-        <section v-if="route === 'candidateAssessments'" class="page-section">
-          <div class="page-header"><div><h1>Assessments</h1><p>Assessment invitations will appear here.</p></div></div>
-          <p class="empty-state">No assessment has been assigned yet.</p>
+
+        <section v-if="route === 'login'" class="mx-auto max-w-md space-y-5 py-12">
+          <div class="space-y-2"><h1 class="text-3xl font-semibold text-ink-gray-9">Sign in</h1><p class="text-p-base text-ink-gray-6">Use your candidate or university staff account.</p></div>
+          <form class="space-y-4" @submit.prevent="login">
+            <FormControl v-model="loginForm.email" label="Email" type="email" required />
+            <FormControl v-model="loginForm.password" label="Password" type="password" required />
+            <div class="flex items-center justify-between gap-2 pt-2">
+              <Button label="Create candidate account" variant="ghost" theme="gray" @click="navigate('register')" />
+              <Button label="Sign in" variant="solid" theme="gray" type="submit" :loading="loading" />
+            </div>
+          </form>
         </section>
-        <section v-if="route === 'candidateInterviews'" class="page-section">
-          <div class="page-header"><div><h1>Interviews</h1><p>Scheduled interviews will appear here.</p></div></div>
-          <p class="empty-state">No interview is scheduled yet.</p>
+
+        <section v-if="route === 'register'" class="mx-auto max-w-md space-y-5 py-12">
+          <div class="space-y-2"><h1 class="text-3xl font-semibold text-ink-gray-9">Create candidate account</h1><p class="text-p-base text-ink-gray-6">Staff accounts are provisioned by university administrators.</p></div>
+          <form class="space-y-4" @submit.prevent="register">
+            <FormControl v-model="registerForm.full_name" label="Full name" required />
+            <FormControl v-model="registerForm.email" label="Email" type="email" required />
+            <FormControl v-model="registerForm.password" label="Password" type="password" required />
+            <div class="flex justify-end gap-2 pt-2"><Button label="Create account" variant="solid" theme="gray" type="submit" :loading="loading" /></div>
+          </form>
         </section>
-        <section v-if="route === 'candidateProfile'" class="page-section">
-          <div class="page-header"><div><h1>Profile</h1><p>{{ currentUser?.email }}</p></div></div>
-          <p class="empty-state">Profile editing will be added after the core hiring workflow is complete.</p>
-        </section>
-      </section>
+      </div>
     </section>
 
-    <section v-else-if="isStaff" class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <span class="brand-mark">HP</span>
-          <div>
-            <strong>Hiring Platform</strong>
-            <small>University recruitment</small>
+    <component :is="isCompactViewport ? MobileShell : DesktopShell" v-else-if="isCandidate">
+      <template v-if="!isCompactViewport" #sidebar>
+        <Sidebar width="16rem" class="border-r border-outline-gray-1">
+          <SidebarHeader title="Candidate Portal" :subtitle="currentUser?.full_name ?? ''" />
+          <SidebarLabel class="px-2">Recruitment</SidebarLabel>
+          <div class="space-y-0.5 px-3">
+            <SidebarItem v-for="item in candidateNav" :key="item.route" :label="item.label" :icon="item.icon" :active="route === item.route" @click="navigate(item.route)" />
           </div>
-        </div>
-        <p class="sidebar-label">Recruitment</p>
-        <nav class="nav-list">
-          <button v-for="item in staffNav" :key="item.route" class="nav-item" :class="{ active: route === item.route }" type="button" @click="navigate(item.route)">
-            <component :is="item.icon" :size="17" />
-            <span>{{ item.label }}</span>
-            <Badge v-if="item.count !== null">{{ item.count }}</Badge>
-          </button>
-        </nav>
-        <div class="user-strip">
-          <strong>{{ currentUser?.full_name }}</strong>
-          <small>{{ currentUser?.roles.map(stageLabel).join(', ') }}</small>
-          <Button variant="ghost" @click="logout"><LogOut :size="16" /> Sign out</Button>
-        </div>
-      </aside>
+          <div class="mt-auto px-3 pb-3"><Button label="Sign out" icon-left="lucide-log-out" variant="ghost" theme="gray" @click="logout" /></div>
+        </Sidebar>
+      </template>
+      <template v-if="isCompactViewport" #nav>
+        <MobileNav style="grid-template-columns: repeat(5, minmax(0, 1fr)); grid-auto-flow: row;">
+          <MobileNavItem
+            v-for="item in candidateNav"
+            :key="item.route"
+            :label="item.label"
+            :icon="item.icon"
+            :active="route === item.route"
+            @click="navigate(item.route)"
+          />
+        </MobileNav>
+      </template>
 
-      <section class="workspace">
-        <div v-if="message" class="notice success">{{ message }}</div>
-        <div v-if="errorMessage" class="notice error">{{ errorMessage }}</div>
+      <PageHeader>
+        <div><h1 class="text-2xl font-semibold text-ink-gray-8">{{ candidatePageTitle }}</h1></div>
+        <Button label="Browse jobs" variant="subtle" theme="gray" icon-left="lucide-briefcase-business" @click="navigate('candidateJobs')" />
+      </PageHeader>
 
-        <section v-if="route === 'staffDashboard'" class="page-section">
-          <div class="page-header"><div><h1>Recruitment dashboard</h1><p>Operational work requiring staff attention.</p></div></div>
-          <div class="metric-grid">
-            <div class="metric"><span>{{ dashboard.open_jobs ?? 0 }}</span><p>Open jobs</p></div>
-            <div class="metric"><span>{{ dashboard.applications_received ?? 0 }}</span><p>Applications received</p></div>
-            <div class="metric"><span>{{ dashboard.screening_reviews_pending ?? 0 }}</span><p>Screening reviews pending</p></div>
-            <div class="metric"><span>{{ dashboard.shortlisted_for_assessment ?? 0 }}</span><p>Shortlisted for assessment</p></div>
+      <div class="px-3 py-5 sm:px-5">
+        <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
+        <section v-if="route === 'candidateJobs'" class="space-y-3">
+          <List :columns="candidateJobListColumns" :row-height="60">
+            <ListRow v-for="job in publicFilteredJobs" :key="job.id" :value="job.id" @click="openPublicJob(job)">
+              <ListCell><div><div class="text-base-medium text-ink-gray-8">{{ job.title }}</div><div class="mt-1 text-sm text-ink-gray-5">{{ job.designation }} · {{ job.employment_type }}<span class="sm:hidden"> · {{ job.location }}</span></div></div></ListCell>
+              <ListCell class="hidden sm:flex"><span class="text-sm text-ink-gray-7">{{ job.location }}</span></ListCell>
+              <ListCell class="hidden sm:flex"><Button label="Apply" variant="ghost" theme="gray" @click.stop="openPublicJob(job)" /></ListCell>
+            </ListRow>
+          </List>
+        </section>
+        <section v-if="route === 'candidateApplications'" class="max-w-4xl space-y-4">
+          <List v-if="myApplications.length" :columns="candidateApplicationListColumns" :row-height="64">
+            <ListRow v-for="application in myApplications" :key="application.id" :value="application.id">
+              <ListCell><div><div class="text-base-medium text-ink-gray-8">{{ application.job_title }}</div><div class="mt-1 text-sm text-ink-gray-5">Applied {{ formatDate(application.submitted_at) }}<span v-if="application.resume_filename"> · {{ application.resume_filename }}</span></div><div class="mt-2 sm:hidden"><StatusBadge :value="application.status_label" /></div></div></ListCell>
+              <ListCell class="hidden sm:flex"><StatusBadge :value="application.status_label" /></ListCell>
+              <ListCell class="hidden sm:flex"><span class="text-sm text-ink-gray-5">Submitted to review</span></ListCell>
+            </ListRow>
+          </List>
+          <div v-else class="flex flex-col items-center justify-center gap-3 py-16 text-center"><div class="rounded-full bg-surface-gray-2 p-3 text-ink-gray-5"><span class="lucide-inbox size-6" aria-hidden="true" /></div><p class="text-base text-ink-gray-7">No applications yet.</p></div>
+        </section>
+        <section v-if="route === 'candidateAssessments'" class="max-w-4xl"><Alert title="No assessment assigned" description="Assessment invitations will appear here when a reviewer assigns one." theme="gray" /></section>
+        <section v-if="route === 'candidateInterviews'" class="max-w-4xl"><Alert title="No interview scheduled" description="Interview details will appear here when a panel schedules one." theme="gray" /></section>
+        <section v-if="route === 'candidateProfile'" class="max-w-4xl"><Alert :title="currentUser?.full_name ?? 'Profile'" :description="currentUser?.email ?? ''" theme="gray" /></section>
+      </div>
+    </component>
+
+    <component :is="isCompactViewport ? MobileShell : DesktopShell" v-else-if="isStaff">
+      <template v-if="!isCompactViewport" #sidebar>
+        <Sidebar width="16rem" class="border-r border-outline-gray-1">
+          <SidebarHeader title="Hiring Platform" subtitle="University recruitment" />
+          <SidebarLabel class="px-2">Recruitment</SidebarLabel>
+          <div class="space-y-0.5 px-3">
+            <SidebarItem v-for="item in staffNav" :key="item.route" :label="item.label" :icon="item.icon" :active="route === item.route" @click="navigate(item.route)">
+              <template #suffix><span v-if="item.count !== null" class="mr-2 text-xs text-ink-gray-5">{{ item.count }}</span></template>
+            </SidebarItem>
           </div>
-          <div class="pipeline-band">
-            <span>Applied</span><span>Screening</span><span>Review</span><span>Assessment</span><span>Interview</span><span>Decision</span>
+          <Divider class="mx-3 mt-auto" />
+          <div class="space-y-2 px-3 pb-3">
+            <div class="flex items-center gap-2"><Avatar :label="currentUser?.full_name ?? 'User'" size="md" /><div class="min-w-0"><div class="truncate text-sm font-medium text-ink-gray-8">{{ currentUser?.full_name }}</div><div class="truncate text-xs text-ink-gray-5">{{ currentUser?.roles.map(stageLabel).join(', ') }}</div></div></div>
+            <Button label="Sign out" icon-left="lucide-log-out" variant="ghost" theme="gray" @click="logout" />
           </div>
+        </Sidebar>
+      </template>
+      <PageHeader>
+        <div class="min-w-0"><h1 class="truncate text-2xl font-semibold text-ink-gray-8">{{ staffPageTitle }}</h1></div>
+        <Button v-if="route === 'staffJobs'" label="New job" icon-left="lucide-plus" variant="solid" theme="gray" @click="showJobEditor = !showJobEditor" />
+      </PageHeader>
+
+      <div class="px-3 py-5 sm:px-5">
+        <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
+
+        <section v-if="route === 'staffDashboard'" class="mx-auto max-w-4xl space-y-6">
+          <div class="divide-y divide-outline-gray-1 rounded border border-outline-gray-1 bg-surface-base sm:divide-y-0 sm:divide-x sm:grid sm:grid-cols-4">
+            <div class="p-4"><div class="text-3xl font-semibold text-ink-gray-9">{{ dashboard.open_jobs ?? 0 }}</div><div class="mt-1 text-sm text-ink-gray-5">Open jobs</div></div>
+            <div class="p-4"><div class="text-3xl font-semibold text-ink-gray-9">{{ dashboard.applications_received ?? 0 }}</div><div class="mt-1 text-sm text-ink-gray-5">Applications</div></div>
+            <div class="p-4"><div class="text-3xl font-semibold text-ink-gray-9">{{ dashboard.screening_reviews_pending ?? 0 }}</div><div class="mt-1 text-sm text-ink-gray-5">Screening reviews</div></div>
+            <div class="p-4"><div class="text-3xl font-semibold text-ink-gray-9">{{ dashboard.shortlisted_for_assessment ?? 0 }}</div><div class="mt-1 text-sm text-ink-gray-5">Shortlisted</div></div>
+          </div>
+          <section class="space-y-3"><h2 class="text-lg-semibold text-ink-gray-8">Pipeline</h2><div class="grid grid-cols-2 gap-2 sm:grid-cols-6"><Badge v-for="label in ['Applied','Screening','Review','Assessment','Interview','Decision']" :key="label" :label="label" variant="subtle" theme="gray" /></div></section>
         </section>
 
-        <section v-if="route === 'staffJobs'" class="page-section">
-          <div class="page-header">
-            <div><h1>Jobs</h1><p>Manage drafts, published openings and closed roles.</p></div>
-            <Button @click="showJobEditor = !showJobEditor">New job</Button>
+        <section v-if="route === 'staffJobs'" class="space-y-4">
+          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
+            <FormControl v-model="staffJobFilter.search" label="Search" placeholder="Search jobs" @keyup.enter="loadStaffJobs" />
+            <FormControl v-model="staffJobFilter.status" type="select" label="Status" :options="jobStatusOptions" @update:model-value="loadStaffJobs" />
           </div>
-          <div class="toolbar">
-            <FormControl v-model="staffJobFilter.search" placeholder="Search jobs" @keyup.enter="loadStaffJobs" />
-            <select v-model="staffJobFilter.status" class="select-control" @change="loadStaffJobs">
-              <option value="">All statuses</option><option>DRAFT</option><option>PUBLISHED</option><option>CLOSED</option>
-            </select>
-          </div>
-          <form v-if="showJobEditor" class="editor-panel" @submit.prevent="createJob">
+          <form v-if="showJobEditor" class="mx-auto max-w-xl space-y-4 rounded border border-outline-gray-1 bg-surface-base p-4" @submit.prevent="createJob">
             <FormControl v-model="jobForm.title" label="Job title" required />
             <FormControl v-model="jobForm.designation" label="Designation" required />
             <FormControl v-model="jobForm.employment_type" label="Employment type" required />
@@ -769,141 +918,46 @@ onMounted(bootstrap)
             <FormControl v-model="jobForm.location" label="Location" required />
             <FormControl v-model="jobForm.jd_document_ref" label="JD reference" />
             <Textarea v-model="jobForm.description" label="Description" />
-            <Button type="submit">Create draft</Button>
+            <div class="flex justify-end gap-2"><Button label="Create draft" variant="solid" theme="gray" type="submit" /></div>
           </form>
-          <div class="data-table">
-            <button v-for="job in staffJobs" :key="job.id" class="table-row" type="button" @click="navigate('staffJobWorkspace', { jobId: job.id })">
-              <span><strong>{{ job.title }}</strong><small>{{ job.designation }}</small></span>
-              <span>{{ job.location }}</span>
-              <span>{{ job.vacancy_count }}</span>
-              <StatusBadge :value="job.status" />
-              <span>{{ formatDate(job.updated_at) }}</span>
-            </button>
-          </div>
+          <List :columns="staffJobListColumns" :row-height="52">
+            <ListHeader class="hidden sm:grid"><ListHeaderCell>Job</ListHeaderCell><ListHeaderCell>Location</ListHeaderCell><ListHeaderCell>Vacancies</ListHeaderCell><ListHeaderCell>Status</ListHeaderCell><ListHeaderCell>Updated</ListHeaderCell></ListHeader>
+            <ListRow v-for="job in staffJobs" :key="job.id" :value="job.id" @click="navigate('staffJobWorkspace', { jobId: job.id })">
+              <ListCell><div><div class="truncate text-base-medium text-ink-gray-8">{{ job.title }}</div><div class="mt-1 truncate text-sm text-ink-gray-5">{{ job.designation }}<span class="sm:hidden"> · {{ job.location }} · {{ job.vacancy_count }} vacancies</span></div><div class="mt-2 sm:hidden"><StatusBadge :value="job.status" /></div></div></ListCell>
+              <ListCell class="hidden sm:flex">{{ job.location }}</ListCell><ListCell class="hidden sm:flex">{{ job.vacancy_count }}</ListCell><ListCell class="hidden sm:flex"><StatusBadge :value="job.status" /></ListCell><ListCell class="hidden sm:flex"><span class="text-sm text-ink-gray-5">{{ formatDate(job.updated_at) }}</span></ListCell>
+            </ListRow>
+          </List>
         </section>
 
-        <section v-if="route === 'staffJobWorkspace' && selectedJob" class="page-section">
-          <button class="back-link" type="button" @click="navigate('staffJobs')">Back to jobs</button>
-          <div class="page-header">
-            <div><h1>{{ selectedJob.title }}</h1><p>{{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}</p></div>
-            <StatusBadge :value="selectedJob.status" />
-          </div>
-          <div class="tab-row">
-            <button v-for="tab in ['overview', 'rubric', 'applications', 'activity']" :key="tab" type="button" :class="{ active: activeJobTab === tab }" @click="activeJobTab = tab as typeof activeJobTab">{{ stageLabel(tab) }}</button>
-          </div>
-          <section v-if="activeJobTab === 'overview'" class="editor-panel">
-            <FormControl v-model="jobForm.title" label="Job title" required />
-            <FormControl v-model="jobForm.location" label="Location" required />
-            <FormControl v-model="jobForm.employment_type" label="Employment type" required />
-            <Textarea v-model="jobForm.description" label="Description" />
-            <div class="action-row">
-              <Button :disabled="selectedJob.status !== 'DRAFT'" @click="saveDraft">Save draft</Button>
-              <Button :disabled="selectedJob.status !== 'DRAFT' || !approvedRubric" @click="publishJob">Publish</Button>
-              <Button :disabled="selectedJob.status !== 'PUBLISHED'" theme="red" @click="closeJob">Close job</Button>
-            </div>
-          </section>
-          <section v-if="activeJobTab === 'rubric'" class="workspace-grid">
-            <div class="panel">
-              <h2>Job description</h2>
-              <p v-if="selectedJob.jd_document">{{ selectedJob.jd_document.original_filename }}</p>
-              <p v-else>{{ selectedJob.jd_document_ref || 'No JD document uploaded yet.' }}</p>
-              <label class="upload-field"><span>Replace JD</span><input type="file" accept=".pdf,.docx,.txt,.md" @change="uploadJdDocument"></label>
-              <Button @click="generateRubric">Generate rubric</Button>
-            </div>
-            <div class="panel">
-              <h2>Screening rubric</h2>
-              <p v-if="approvedRubric">Current approved rubric: v{{ approvedRubric.version_number }}</p>
-              <p v-else class="empty-state">No approved rubric. Publishing is blocked until a rubric is approved.</p>
-              <div v-for="version in rubricVersions" :key="version.id" class="rubric-row">
-                <div><strong>Version {{ version.version_number }}</strong><small>{{ version.status }} · {{ version.criteria.length }} criteria</small></div>
-                <Button v-if="version.status !== 'APPROVED' && version.status !== 'SUPERSEDED'" @click="approveRubric(version)">Approve rubric</Button>
-              </div>
-            </div>
-          </section>
+        <section v-if="route === 'staffJobWorkspace' && selectedJob" class="space-y-5">
+          <Breadcrumbs :items="[{ label: 'Jobs', route: '/app/jobs' }, { label: selectedJob.title }]" />
+          <div class="flex items-start justify-between gap-3"><div><h2 class="text-2xl font-semibold text-ink-gray-8">{{ selectedJob.title }}</h2><p class="mt-1 text-p-base text-ink-gray-5">{{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}</p></div><StatusBadge :value="selectedJob.status" /></div>
+          <TabButtons v-model="activeJobTab" :options="jobTabOptions" />
+          <form v-if="activeJobTab === 'overview'" class="max-w-xl space-y-4" @submit.prevent="saveDraft"><FormControl v-model="jobForm.title" label="Job title" required /><FormControl v-model="jobForm.location" label="Location" required /><FormControl v-model="jobForm.employment_type" label="Employment type" required /><Textarea v-model="jobForm.description" label="Description" /><div class="flex justify-end gap-2"><Button label="Save draft" :disabled="selectedJob.status !== 'DRAFT'" @click="saveDraft" /><Tooltip text="Publishing requires an approved rubric"><Button label="Publish" variant="solid" theme="gray" :disabled="selectedJob.status !== 'DRAFT' || !approvedRubric" @click="publishJob" /></Tooltip><Button label="Close job" variant="subtle" theme="red" :disabled="selectedJob.status !== 'PUBLISHED'" @click="closeJob" /></div></form>
+          <section v-if="activeJobTab === 'rubric'" class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]"><div class="space-y-4"><h3 class="text-lg-semibold text-ink-gray-8">Job description</h3><p class="text-p-base text-ink-gray-7">{{ selectedJob.jd_document?.original_filename || selectedJob.jd_document_ref || 'No JD document uploaded yet.' }}</p><label class="block space-y-1 text-sm text-ink-gray-6"><span>Replace JD</span><input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5 text-base text-ink-gray-8" type="file" accept=".pdf,.docx,.txt,.md" @change="uploadJdDocument"></label><Button label="Generate rubric" icon-left="lucide-sparkles" variant="solid" theme="gray" @click="generateRubric" /></div><aside class="space-y-3 border-l border-outline-gray-1 pl-5"><h3 class="text-lg-semibold text-ink-gray-8">Screening rubric</h3><Alert v-if="!approvedRubric" title="No approved rubric" description="Publishing is blocked until a rubric is approved." theme="amber" /><List v-if="rubricVersions.length" :columns="['minmax(0,1fr)', '8rem']"><ListRow v-for="version in rubricVersions" :key="version.id" :value="version.id"><ListCell><div><div class="text-base-medium text-ink-gray-8">Version {{ version.version_number }}</div><div class="text-sm text-ink-gray-5">{{ version.criteria.length }} criteria</div></div></ListCell><ListCell><Button v-if="version.status !== 'APPROVED' && version.status !== 'SUPERSEDED'" label="Approve" variant="subtle" theme="gray" @click="approveRubric(version)" /><StatusBadge v-else :value="version.status" /></ListCell></ListRow></List></aside></section>
         </section>
 
-        <section v-if="route === 'staffApplications' || route === 'staffScreeningReview'" class="page-section">
-          <div class="page-header"><div><h1>{{ route === 'staffScreeningReview' ? 'Screening review' : 'Applications' }}</h1><p>Candidate pipeline with screening state.</p></div></div>
-          <div class="toolbar">
-            <FormControl v-model="applicationFilter.search" placeholder="Search candidates or jobs" />
-            <select v-model="applicationFilter.job_id" class="select-control" @change="loadApplications"><option value="">All jobs</option><option v-for="job in staffJobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
-            <select v-model="applicationFilter.stage" class="select-control" @change="loadApplications"><option value="">All stages</option><option v-for="stage in applicationStages" :key="stage" :value="stage">{{ stageLabel(stage) }}</option></select>
-          </div>
-          <div class="application-table">
-            <button v-for="application in staffFilteredApplications" :key="application.id" class="application-row" type="button" @click="navigate('staffApplicationWorkspace', { applicationId: application.id })">
-              <span><strong>{{ application.candidate?.full_name ?? 'Candidate' }}</strong><small>{{ application.candidate?.email }}</small></span>
-              <span>{{ application.job_title }}</span>
-              <span>{{ formatDate(application.submitted_at) }}</span>
-              <span>{{ application.screening_status ? stageLabel(application.screening_status) : 'Queued' }}</span>
-              <span>{{ application.screening_score ?? 'Pending' }}</span>
-              <StatusBadge :value="application.current_stage" />
-            </button>
-          </div>
-          <p v-if="!staffFilteredApplications.length" class="empty-state">No applications match your filters.</p>
+        <section v-if="route === 'staffApplications' || route === 'staffScreeningReview'" class="space-y-4">
+          <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem_14rem]"><FormControl v-model="applicationFilter.search" label="Search" placeholder="Search candidates or jobs" /><FormControl v-model="applicationFilter.job_id" type="select" label="Job" :options="jobFilterOptions" @update:model-value="loadApplications" /><FormControl v-model="applicationFilter.stage" type="select" label="Stage" :options="applicationStageOptions" @update:model-value="loadApplications" /></div>
+          <List v-if="staffFilteredApplications.length" :columns="staffApplicationListColumns" :row-height="56"><ListHeader class="hidden sm:grid"><ListHeaderCell>Candidate</ListHeaderCell><ListHeaderCell>Job</ListHeaderCell><ListHeaderCell>Applied</ListHeaderCell><ListHeaderCell>Screening</ListHeaderCell><ListHeaderCell>Score</ListHeaderCell><ListHeaderCell>Stage</ListHeaderCell></ListHeader><ListRow v-for="application in staffFilteredApplications" :key="application.id" :value="application.id" @click="navigate('staffApplicationWorkspace', { applicationId: application.id })"><ListCell><div><div class="truncate text-base-medium text-ink-gray-8">{{ application.candidate?.full_name ?? 'Candidate' }}</div><div class="mt-1 truncate text-sm text-ink-gray-5">{{ application.candidate?.email }}</div><div class="mt-1 truncate text-sm text-ink-gray-5 sm:hidden">{{ application.job_title }} · {{ application.screening_score ?? 'Pending' }}</div><div class="mt-2 sm:hidden"><StatusBadge :value="application.current_stage" /></div></div></ListCell><ListCell class="hidden sm:flex">{{ application.job_title }}</ListCell><ListCell class="hidden sm:flex"><span class="text-sm text-ink-gray-5">{{ formatDate(application.submitted_at) }}</span></ListCell><ListCell class="hidden sm:flex">{{ application.screening_status ? stageLabel(application.screening_status) : 'Queued' }}</ListCell><ListCell class="hidden sm:flex">{{ application.screening_score ?? 'Pending' }}</ListCell><ListCell class="hidden sm:flex"><StatusBadge :value="application.current_stage" /></ListCell></ListRow></List>
+          <div v-else class="flex flex-col items-center justify-center gap-3 py-16 text-center"><div class="rounded-full bg-surface-gray-2 p-3 text-ink-gray-5"><span class="lucide-inbox size-6" aria-hidden="true" /></div><p class="text-base text-ink-gray-7">No applications match your filters.</p></div>
         </section>
 
-        <section v-if="route === 'staffApplicationWorkspace' && selectedApplication" class="page-section">
-          <button class="back-link" type="button" @click="navigate('staffApplications')">Back to applications</button>
-          <div class="page-header">
-            <div><h1>{{ selectedApplication.candidate?.full_name ?? 'Candidate' }}</h1><p>{{ selectedApplication.job_title }} · applied {{ formatDate(selectedApplication.submitted_at) }}</p></div>
-            <StatusBadge :value="selectedApplication.current_stage" />
-          </div>
-          <div class="tab-row">
-            <button v-for="tab in ['overview', 'screening', 'assessment', 'interview', 'history']" :key="tab" type="button" :class="{ active: activeApplicationTab === tab }" @click="activeApplicationTab = tab as typeof activeApplicationTab">{{ stageLabel(tab) }}</button>
-          </div>
-          <section v-if="activeApplicationTab === 'overview'" class="workspace-grid">
-            <div class="panel"><h2>Candidate</h2><p>{{ selectedApplication.candidate?.email }}</p><p>{{ selectedApplication.candidate?.phone || 'No phone recorded' }}</p></div>
-            <div class="panel"><h2>Progress summary</h2><p>Screening: {{ latestScreening ? stageLabel(latestScreening.run_status) : 'Queued' }}</p><p>Assessment: Not assigned</p><p>Intro video: Not requested</p><p>Interview: Not scheduled</p><p>Final: Undecided</p></div>
-          </section>
-          <section v-if="activeApplicationTab === 'screening'" class="workspace-grid">
-            <div class="panel screening-card">
-              <h2>Screening summary</h2>
-              <template v-if="latestScreening">
-                <StatusBadge :value="latestScreening.run_status" />
-                <strong>{{ latestScreening.score ?? 'Pending' }} / {{ latestScreening.maximum_score ?? 100 }}</strong>
-                <p>Eligibility: {{ latestScreening.eligibility ?? 'Pending' }}</p>
-                <p>Evidence completeness: {{ percent(latestScreening.evidence_completeness) }}</p>
-                <p>Confirmed experience: {{ latestScreening.confirmed_experience_months ?? 0 }} months</p>
-                <p v-if="latestScreening.failure_message" class="failure-copy">Screening needs technical review. {{ latestScreening.failure_message }}</p>
-                <Button v-if="latestScreening.run_status === 'FAILED'" @click="retryLatestScreening">Retry technical screening</Button>
-              </template>
-              <p v-else class="empty-state">Screening has been queued and will appear here when processed.</p>
-            </div>
-            <div class="panel">
-              <h2>Human review</h2>
-              <Textarea v-model="remarks" label="Decision remarks" />
-              <div class="action-row">
-                <Button @click="screeningDecision('shortlist')">Shortlist for assessment</Button>
-                <Button @click="screeningDecision('hold')">Hold</Button>
-                <Button theme="red" @click="screeningDecision('do-not-progress')">Do not progress</Button>
-              </div>
-            </div>
-            <div class="panel wide-panel">
-              <h2>Criteria and evidence</h2>
-              <article v-for="criterion in latestScreening?.criterion_results ?? []" :key="criterion.id" class="criterion-row">
-                <div><strong>{{ criterion.criterion_name }}</strong><p>{{ criterion.explanation }}</p></div>
-                <StatusBadge :value="criterion.status" />
-                <details v-for="evidence in criterion.evidence" :key="evidence.id">
-                  <summary>{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary>
-                  <p>{{ evidence.exact_text }}</p>
-                  <small>Page {{ evidence.page_number ?? 'n/a' }}</small>
-                </details>
-              </article>
-              <p v-if="!latestScreening?.criterion_results.length" class="empty-state">Screening evidence is not available yet.</p>
-            </div>
-          </section>
-          <section v-if="activeApplicationTab === 'assessment'" class="panel"><h2>Assessment</h2><p class="empty-state">No assessment assignment has been created for this application.</p></section>
-          <section v-if="activeApplicationTab === 'interview'" class="panel"><h2>Interview</h2><p class="empty-state">No interview is scheduled for this candidate.</p><p>Intro video: Not requested</p></section>
-          <section v-if="activeApplicationTab === 'history'" class="panel">
-            <h2>Decision history</h2>
-            <div v-for="item in dossier?.stage_history ?? []" :key="item.id" class="history-row"><strong>{{ stageLabel(item.previous_stage || 'Start') }} to {{ stageLabel(item.new_stage) }}</strong><small>{{ formatDate(item.timestamp) }} · {{ item.remarks || 'System transition' }}</small></div>
-          </section>
+        <section v-if="route === 'staffApplicationWorkspace' && selectedApplication" class="space-y-5">
+          <Breadcrumbs :items="[{ label: 'Applications', route: '/app/applications' }, { label: selectedApplication.candidate?.full_name ?? 'Candidate' }]" />
+          <div class="flex items-start justify-between gap-3"><div><h2 class="text-2xl font-semibold text-ink-gray-8">{{ selectedApplication.candidate?.full_name ?? 'Candidate' }}</h2><p class="mt-1 text-p-base text-ink-gray-5">{{ selectedApplication.job_title }} · applied {{ formatDate(selectedApplication.submitted_at) }}</p></div><StatusBadge :value="selectedApplication.current_stage" /></div>
+          <TabButtons v-model="activeApplicationTab" :options="applicationTabOptions" />
+          <section v-if="activeApplicationTab === 'overview'" class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]"><div class="space-y-3"><h3 class="text-lg-semibold text-ink-gray-8">Candidate</h3><p class="text-p-base text-ink-gray-7">{{ selectedApplication.candidate?.email }}</p><p class="text-p-base text-ink-gray-7">{{ selectedApplication.candidate?.phone || 'No phone recorded' }}</p></div><aside class="space-y-2 border-l border-outline-gray-1 pl-5"><h3 class="text-lg-semibold text-ink-gray-8">Progress summary</h3><p>Screening: {{ latestScreening ? stageLabel(latestScreening.run_status) : 'Queued' }}</p><p>Assessment: Not assigned</p><p>Intro video: Not requested</p><p>Interview: Not scheduled</p><p>Final: Undecided</p></aside></section>
+          <section v-if="activeApplicationTab === 'screening'" class="space-y-6"><div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]"><section class="space-y-2"><h3 class="text-lg-semibold text-ink-gray-8">Screening summary</h3><template v-if="latestScreening"><StatusBadge :value="latestScreening.run_status" /><div class="text-3xl font-semibold text-ink-gray-9">{{ latestScreening.score ?? 'Pending' }} / {{ latestScreening.maximum_score ?? 100 }}</div><p class="text-p-base text-ink-gray-7">Eligibility: {{ latestScreening.eligibility ?? 'Pending' }}</p><p class="text-p-base text-ink-gray-7">Evidence completeness: {{ percent(latestScreening.evidence_completeness) }}</p><p class="text-p-base text-ink-gray-7">Confirmed experience: {{ latestScreening.confirmed_experience_months ?? 0 }} months</p><Alert v-if="latestScreening.failure_message" title="Screening needs technical review" :description="latestScreening.failure_message" theme="red" /><Button v-if="latestScreening.run_status === 'FAILED'" label="Retry technical screening" variant="subtle" theme="gray" @click="retryLatestScreening" /></template><Alert v-else title="Screening queued" description="Results will appear here after the worker processes the job." theme="gray" /></section><aside class="space-y-3 border-l border-outline-gray-1 pl-5"><h3 class="text-lg-semibold text-ink-gray-8">Human review</h3><Textarea v-model="remarks" label="Decision remarks" required /><div class="flex flex-col gap-2"><Button label="Shortlist for assessment" variant="solid" theme="gray" @click="screeningDecision('shortlist')" /><Button label="Hold" variant="subtle" theme="gray" @click="screeningDecision('hold')" /><Button label="Do not progress" variant="subtle" theme="red" @click="screeningDecision('do-not-progress')" /></div></aside></div><section class="space-y-3"><h3 class="text-lg-semibold text-ink-gray-8">Criteria and evidence</h3><List v-if="latestScreening?.criterion_results.length" :columns="['minmax(0,1fr)', '9rem']"><ListRow v-for="criterion in latestScreening.criterion_results" :key="criterion.id" :value="criterion.id"><ListCell><div><div class="text-base-medium text-ink-gray-8">{{ criterion.criterion_name }}</div><p class="mt-1 text-p-sm text-ink-gray-6">{{ criterion.explanation }}</p><details v-for="evidence in criterion.evidence" :key="evidence.id" class="mt-2 rounded border border-outline-gray-1 bg-surface-gray-1 p-2"><summary class="text-sm text-ink-gray-7">{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary><p class="mt-2 text-p-sm text-ink-gray-7">{{ evidence.exact_text }}</p><small class="text-ink-gray-5">Page {{ evidence.page_number ?? 'n/a' }}</small></details></div></ListCell><ListCell><StatusBadge :value="criterion.status" /></ListCell></ListRow></List><Alert v-else title="No screening evidence yet" description="Evidence is available after screening completes." theme="gray" /></section></section>
+          <section v-if="activeApplicationTab === 'assessment'"><Alert title="No assessment assignment" description="Assessment results will appear here when implemented for this application." theme="gray" /></section>
+          <section v-if="activeApplicationTab === 'interview'"><Alert title="No interview scheduled" description="Panel scheduling, recordings and feedback will appear here later." theme="gray" /></section>
+          <section v-if="activeApplicationTab === 'history'" class="space-y-3"><h3 class="text-lg-semibold text-ink-gray-8">Decision history</h3><List v-if="dossier?.stage_history.length" :columns="['minmax(0,1fr)', '10rem']"><ListRow v-for="item in dossier.stage_history" :key="item.id" :value="item.id"><ListCell><div><div class="text-base-medium text-ink-gray-8">{{ stageLabel(item.previous_stage || 'Start') }} to {{ stageLabel(item.new_stage) }}</div><div class="mt-1 text-sm text-ink-gray-5">{{ item.remarks || 'System transition' }}</div></div></ListCell><ListCell><span class="text-sm text-ink-gray-5">{{ formatDate(item.timestamp) }}</span></ListCell></ListRow></List><Alert v-else title="No history yet" description="Stage changes and decisions will appear here." theme="gray" /></section>
         </section>
 
-        <section v-if="route === 'staffAssessments'" class="page-section"><div class="page-header"><div><h1>Assessments</h1><p>Assignments and review queues.</p></div></div><p class="empty-state">No assessment assignments are available yet.</p></section>
-        <section v-if="route === 'staffInterviews'" class="page-section"><div class="page-header"><div><h1>Interviews</h1><p>Upcoming interviews, completed interviews and feedback pending.</p></div></div><p class="empty-state">No interview rounds are scheduled yet.</p></section>
-        <section v-if="route === 'staffFinalDecisions'" class="page-section"><div class="page-header"><div><h1>Final decisions</h1><p>Human final decisions and audit trail.</p></div></div><p class="empty-state">No final decision records are pending.</p></section>
-      </section>
-    </section>
+        <section v-if="route === 'staffAssessments'"><Alert title="No assessment assignments" description="Templates, assignments and review queues will appear here when this module is implemented." theme="gray" /></section>
+        <section v-if="route === 'staffInterviews'"><Alert title="No interviews scheduled" description="Upcoming interviews, completed interviews and feedback pending will appear here." theme="gray" /></section>
+        <section v-if="route === 'staffFinalDecisions'"><Alert title="No final decisions pending" description="Human final decisions and audit records will appear here." theme="gray" /></section>
+      </div>
+    </component>
   </main>
 </template>
