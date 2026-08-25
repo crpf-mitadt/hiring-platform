@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 JD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 RESUME_EXTENSIONS = {".pdf", ".json"}
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
 
 JD_CONTENT_TYPES = {
     "application/pdf",
@@ -22,6 +24,12 @@ JD_CONTENT_TYPES = {
     "application/octet-stream",
 }
 RESUME_CONTENT_TYPES = {"application/pdf", "application/json", "application/octet-stream"}
+PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "application/octet-stream"}
+VIDEO_CONTENT_TYPES = {"video/mp4", "video/webm", "video/quicktime", "application/octet-stream"}
+PURPOSE_MAX_BYTES = {
+    DocumentPurpose.RESUME: 5 * 1024 * 1024,
+    DocumentPurpose.PHOTO: 2 * 1024 * 1024,
+}
 
 
 @dataclass(frozen=True)
@@ -58,7 +66,8 @@ class LocalDocumentStorage(DocumentStorage):
         size = len(data)
         if size <= 0:
             raise DomainError("Uploaded document is empty")
-        if size > self.max_upload_bytes:
+        max_bytes = min(PURPOSE_MAX_BYTES.get(purpose, self.max_upload_bytes), self.max_upload_bytes)
+        if size > max_bytes:
             raise DomainError("Uploaded document exceeds maximum size")
 
         digest = sha256(data).hexdigest()
@@ -84,7 +93,7 @@ class LocalDocumentStorage(DocumentStorage):
         return candidate
 
 
-def store_upload(db: Session, actor: User, file: UploadFile, purpose: DocumentPurpose) -> Document:
+def store_upload(db: Session, actor: User | None, file: UploadFile, purpose: DocumentPurpose) -> Document:
     stored = LocalDocumentStorage().save_upload(file, purpose=purpose)
     document = Document(
         purpose=purpose,
@@ -93,7 +102,7 @@ def store_upload(db: Session, actor: User, file: UploadFile, purpose: DocumentPu
         content_type=stored.content_type,
         size_bytes=stored.size_bytes,
         sha256=stored.sha256,
-        uploaded_by_id=actor.id,
+        uploaded_by_id=actor.id if actor else None,
     )
     db.add(document)
     db.flush()
@@ -119,13 +128,24 @@ def _safe_filename(filename: str) -> str:
 
 
 def _validate_extension(purpose: DocumentPurpose, suffix: str) -> None:
-    allowed = JD_EXTENSIONS if purpose == DocumentPurpose.JOB_JD else RESUME_EXTENSIONS
+    allowed_by_purpose = {
+        DocumentPurpose.JOB_JD: JD_EXTENSIONS,
+        DocumentPurpose.RESUME: RESUME_EXTENSIONS,
+        DocumentPurpose.PHOTO: PHOTO_EXTENSIONS,
+        DocumentPurpose.INTRO_VIDEO: VIDEO_EXTENSIONS,
+    }
+    allowed = allowed_by_purpose[purpose]
     if suffix.lower() not in allowed:
         raise DomainError(f"Unsupported {purpose.value} document type: {suffix or '<none>'}")
 
 
 def _validate_content_type(purpose: DocumentPurpose, content_type: str) -> None:
-    allowed = JD_CONTENT_TYPES if purpose == DocumentPurpose.JOB_JD else RESUME_CONTENT_TYPES
+    allowed_by_purpose = {
+        DocumentPurpose.JOB_JD: JD_CONTENT_TYPES,
+        DocumentPurpose.RESUME: RESUME_CONTENT_TYPES,
+        DocumentPurpose.PHOTO: PHOTO_CONTENT_TYPES,
+        DocumentPurpose.INTRO_VIDEO: VIDEO_CONTENT_TYPES,
+    }
+    allowed = allowed_by_purpose[purpose]
     if content_type not in allowed:
         raise DomainError(f"Unsupported {purpose.value} content type: {content_type}")
-

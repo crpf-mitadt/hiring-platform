@@ -2,30 +2,15 @@ from fastapi import APIRouter, Response
 
 from app.api.deps import ActorDep, DbDep, SessionTokenDep
 from app.core.config import get_settings
-from app.schemas.users import LoginRequest, RegisterCandidateRequest, UserRead
+from app.schemas.users import LoginRequest, UserRead
 from app.services.auth import (
     authenticate_user,
-    create_candidate_account,
     create_session,
     revoke_session,
     session_user_payload,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-@router.post("/register", response_model=UserRead)
-def api_register_candidate(db: DbDep, response: Response, data: RegisterCandidateRequest) -> dict:
-    user = create_candidate_account(
-        db,
-        email=str(data.email),
-        full_name=data.full_name,
-        password=data.password,
-    )
-    _, token = create_session(db, user)
-    _set_session_cookie(response, token)
-    db.commit()
-    return session_user_payload(user)
 
 
 @router.post("/login", response_model=UserRead)

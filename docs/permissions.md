@@ -17,8 +17,17 @@ The product API resolves authorization from an HttpOnly server-side session cook
 session cookie -> user session -> user -> roles -> authorization
 ```
 
-Candidate registration creates candidate-only accounts. Staff accounts are provisioned by administrators; there is no
-public staff-role registration path.
+Staff accounts are provisioned by administrators; there is no public staff-role registration path.
+
+Candidates do not register platform accounts or passwords in the public recruitment flow. Candidate follow-up uses an
+application-scoped passwordless session:
+
+```text
+one-time continuation token -> stored hash -> exchange -> HttpOnly application access cookie
+```
+
+The raw continuation token is returned only by a development-only mechanism for manual testing. Production behavior
+must deliver the continuation URL through a notification provider, not logs or public API echo.
 
 The legacy `X-Actor-Id` provider remains available only for development/test automation when explicitly enabled. It is
 not used by the product UI.
@@ -35,9 +44,11 @@ If a non-development actor provider is configured without a real provider implem
 Candidates may access:
 
 - public published jobs
-- their own applications
+- the one application bound to their scoped continuation session
 - their own candidate-safe application status
-- their own uploaded resume document metadata only through application/status flows
+- their own assessment attempt actions for that application
+- their own introduction video upload/skip action when configured for that application
+- their own candidate-safe interview status/instructions
 
 Candidates must not access:
 
@@ -50,6 +61,7 @@ Candidates must not access:
 - internal decision rationale
 - other candidates' applications
 - other candidates' uploaded resumes
+- staff APIs through continuation access
 
 Permission tests cover these boundaries.
 
@@ -81,6 +93,9 @@ The architecture preserves a scoring-safe projection boundary. AI scoring must n
 Operational candidate fields may exist for recruitment coordination, but they are not automatically fed
 into screening. The future real adapter should pass only the screening-safe projection expected by
 `hiring-screening-engine`.
+
+The current scoring-safe projection tests assert that name, email, phone, DOB/age, gender, mother tongue, photo,
+salary, language fields, and similar operational/personal fields are excluded from AI/scoring input.
 
 ## Audit
 

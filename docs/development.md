@@ -62,11 +62,30 @@ database for fast service/API validation only.
 ## Synthetic Seed Data
 
 ```bash
-PYTHONPATH=apps/api .venv/bin/python -m app.seed
+PYTHONPATH=apps/api .venv/bin/python -m app.seed --staff-password '<development-password>'
 ```
 
-The seed command creates only synthetic users, school/department, JD/resume documents, an approved rubric, a published
-job, one application, and a mock screening run when needed.
+The seed command is idempotent and development-gated. It creates synthetic staff users, the MIT Art, Design and
+Technology University school/departments, five current MIT-ADT public-vacancy demo jobs, approved demo rubric versions,
+and demo assessment template versions. It does not copy real resumes, real JDs, private OCR outputs, models, or
+secrets.
+
+Seeded demo vacancies:
+
+- Content Writer, Website Department
+- Full Stack Developer, DIDU
+- Engineering & Technology Faculty
+- Creative Cluster Faculty
+- Management & Humanities Faculty
+
+All seeded rubrics are marked as development/demo manual approved rubric data. Published demo jobs keep the production
+rule that publication requires an approved current rubric version.
+
+For repeated public-flow testing, the development-only reset command is:
+
+```bash
+PYTHONPATH=apps/api .venv/bin/python -m app.seed --reset-demo-applications
+```
 
 ## Screening Worker
 
@@ -135,3 +154,21 @@ npm run build
 
 Use synthetic fixtures only. Do not commit real resumes, real JDs, generated candidate documents,
 OCR outputs, GGUF models, secrets, or private candidate data.
+
+## Manual Product Flow Reference
+
+```text
+anonymous visitor
+  -> Open Positions
+  -> Full Stack Developer
+  -> Apply directly
+  -> complete public MIT-ADT-style form
+  -> upload photo + resume
+  -> submit application
+  -> screening job queued automatically
+  -> continuation link opens application-scoped status
+  -> complete assessment
+  -> upload or skip optional introduction video
+  -> staff signs in separately
+  -> staff reviews pipeline, screening dossier, assessment result, video status, interview status, and history
+```

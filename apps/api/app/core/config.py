@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     session_cookie_name: str = "hiring_session"
     session_cookie_secure: bool = False
     session_ttl_hours: int = 12
+    application_access_cookie_name: str = "hiring_application_access"
+    application_access_token_ttl_hours: int = 24 * 14
+    application_access_session_ttl_hours: int = 24 * 14
+    public_web_base_url: str = "http://localhost:5173"
     document_storage_root: str = ".hiring-documents"
     max_upload_bytes: int = 10 * 1024 * 1024
     screening_provider: str = "mock"

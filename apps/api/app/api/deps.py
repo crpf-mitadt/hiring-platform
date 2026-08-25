@@ -8,10 +8,13 @@ from app.core.errors import AuthenticationRequired
 from app.core.security import get_actor
 from app.db.session import get_db
 from app.models import User
+from app.models.recruitment import Application
+from app.services.application_access import get_application_for_access_session
 from app.services.auth import get_user_for_session_token
 
 DbDep = Annotated[Session, Depends(get_db)]
 SessionTokenDep = Annotated[str | None, Cookie(alias=get_settings().session_cookie_name)]
+ApplicationAccessTokenDep = Annotated[str | None, Cookie(alias=get_settings().application_access_cookie_name)]
 
 
 def current_actor(
@@ -36,3 +39,13 @@ def development_actor(
 
 ActorDep = Annotated[User, Depends(current_actor)]
 DevelopmentActorDep = Annotated[User, Depends(development_actor)]
+
+
+def current_application_access(
+    db: DbDep,
+    application_access_token: ApplicationAccessTokenDep = None,
+) -> Application:
+    return get_application_for_access_session(db, application_access_token)
+
+
+ApplicationAccessDep = Annotated[Application, Depends(current_application_access)]

@@ -10,8 +10,9 @@ const apiMock = vi.hoisted(() => ({
   dashboard: vi.fn(),
   listJobs: vi.fn(),
   listApplications: vi.fn(),
-  myApplications: vi.fn(),
-  screeningDossier: vi.fn()
+  screeningDossier: vi.fn(),
+  applicationAccessStatus: vi.fn(),
+  applicationAccessAssessment: vi.fn()
 }))
 
 vi.mock('./api/client', () => ({ api: apiMock }))
@@ -20,7 +21,7 @@ vi.mock('frappe-ui', () => ({
   Avatar: { props: ['label'], template: '<span>{{ label }}</span>' },
   Badge: { props: ['label'], template: '<span class="mock-badge">{{ label }}<slot /></span>' },
   Breadcrumbs: { props: ['items'], template: '<nav><span v-for="item in items" :key="item.label">{{ item.label }}</span></nav>' },
-  Button: { template: `<button @click="$emit('click')"><slot /></button>` },
+  Button: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}<slot /></button>` },
   DesktopShell: { template: '<div><slot name="sidebar" /><slot /></div>' },
   Divider: { template: '<hr />' },
   ErrorMessage: { props: ['message'], template: '<p>{{ message }}</p>' },
@@ -82,6 +83,11 @@ const publishedJob = {
   hiring_manager_id: 'reviewer-1',
   department_reviewer_ids: ['reviewer-1'],
   status: 'PUBLISHED',
+  role_category: 'FACULTY',
+  application_config: { designation_options: ['Assistant Professor', 'Associate Professor', 'Professor'] },
+  intro_video_mode: 'OPTIONAL',
+  assessment_template_version_id: 'assessment-version-1',
+  source_reference: 'https://mituniversity.ac.in/HR/vacancy_details?id=8',
   created_at: '2026-08-24T00:00:00Z',
   updated_at: '2026-08-24T00:00:00Z'
 }
@@ -107,6 +113,8 @@ describe('Hiring Platform product shell', () => {
         submitted_at: '2026-08-24T00:00:00Z',
         resume_document_ref: null,
         resume_document_id: 'resume-1',
+        applied_designation: 'Assistant Professor',
+        application_payload: { basic: { full_name: 'Priya Sharma', email: 'priya@example.org' } },
         current_stage: 'SCREENING_REVIEW',
         candidate: {
           id: 'candidate-1',
@@ -125,17 +133,12 @@ describe('Hiring Platform product shell', () => {
         screening_status: 'COMPLETED',
         screening_score: 74,
         screening_eligibility: 'REVIEW',
-        evidence_completeness: 0.82
-      }
-    ])
-    apiMock.myApplications.mockResolvedValue([
-      {
-        id: 'application-1',
-        job_id: 'job-1',
-        job_title: 'Assistant Professor',
-        submitted_at: '2026-08-24T00:00:00Z',
-        status_label: 'Under Review',
-        resume_filename: 'resume.pdf'
+        evidence_completeness: 0.82,
+        assessment_status: 'SUBMITTED',
+        assessment_score: 80,
+        assessment_completed_at: '2026-08-24T00:00:00Z',
+        intro_video_status: 'UPLOADED',
+        interview_status: 'NOT_SCHEDULED'
       }
     ])
     apiMock.screeningDossier.mockResolvedValue({
@@ -143,8 +146,29 @@ describe('Hiring Platform product shell', () => {
       current_stage: 'SCREENING_REVIEW',
       screening_runs: [],
       stage_history: [],
-      decisions: []
+      decisions: [],
+      application: null,
+      assessment: null,
+      intro_video: null,
+      interview: null
     })
+    apiMock.applicationAccessStatus.mockResolvedValue({
+      id: 'application-1',
+      job_id: 'job-1',
+      job_title: 'Assistant Professor',
+      submitted_at: '2026-08-24T00:00:00Z',
+      status_label: 'Under Review',
+      resume_filename: 'resume.pdf',
+      progress: [
+        { label: 'Application submitted', status: 'complete' },
+        { label: 'Application review', status: 'in_progress' },
+        { label: 'Assessment', status: 'ASSIGNED' },
+      ],
+      assessment: null,
+      intro_video: { status: 'NOT_UPLOADED' },
+      interview: { status: 'NOT_SCHEDULED' }
+    })
+    apiMock.applicationAccessAssessment.mockResolvedValue(null)
   })
 
   it('renders a public careers portal by default', async () => {
@@ -153,29 +177,27 @@ describe('Hiring Platform product shell', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('University Careers')
-    expect(wrapper.text()).toContain('Find your next opportunity')
+    expect(wrapper.text()).toContain('Open recruitment at MIT-ADT University')
     expect(wrapper.text()).toContain('Assistant Professor')
+    expect(wrapper.text()).toContain('Staff Sign In')
+    expect(wrapper.text()).not.toContain('Candidate Portal')
     expect(wrapper.text()).not.toContain('Actor')
     expect(wrapper.text()).not.toContain('Run Worker Once')
     expect(wrapper.text()).not.toContain('Queue Screening')
   })
 
-  it('renders candidate-safe application status for candidate sessions', async () => {
-    apiMock.me.mockResolvedValue({
-      id: 'candidate-user',
-      email: 'candidate@example.org',
-      full_name: 'Candidate User',
-      roles: ['candidate']
-    })
-    globalThis.history.pushState({}, '', '/candidate/applications')
+  it('renders application-scoped candidate continuation without candidate portal chrome', async () => {
+    globalThis.history.pushState({}, '', '/application')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Candidate Portal')
-    expect(wrapper.text()).toContain('My applications')
+    expect(wrapper.text()).toContain('Application received')
+    expect(wrapper.text()).toContain('Application submitted')
     expect(wrapper.text()).toContain('Under Review')
+    expect(wrapper.text()).not.toContain('Candidate Portal')
+    expect(wrapper.text()).not.toContain('My applications')
     expect(wrapper.text()).not.toContain('Evidence completeness')
     expect(wrapper.text()).not.toContain('screening_score')
   })

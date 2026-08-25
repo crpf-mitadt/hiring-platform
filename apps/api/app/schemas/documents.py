@@ -11,5 +11,5 @@ class DocumentRead(ApiModel):
     content_type: str
     size_bytes: int
     sha256: str
+    uploaded_by_id: str | None = None
     created_at: datetime
-

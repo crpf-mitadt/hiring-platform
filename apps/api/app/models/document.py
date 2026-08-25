@@ -10,6 +10,8 @@ from app.db.base import Base, TimestampMixin
 class DocumentPurpose(str, enum.Enum):
     JOB_JD = "job_jd"
     RESUME = "resume"
+    PHOTO = "photo"
+    INTRO_VIDEO = "intro_video"
 
 
 class Document(Base, TimestampMixin):
@@ -24,7 +26,6 @@ class Document(Base, TimestampMixin):
     content_type: Mapped[str] = mapped_column(String(120), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    uploaded_by_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    uploaded_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
 
     uploaded_by = relationship("User")
-

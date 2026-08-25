@@ -17,12 +17,12 @@ export type JobStatus = 'DRAFT' | 'PUBLISHED' | 'CLOSED'
 
 export type DocumentRead = {
   id: string
-  purpose: 'job_jd' | 'resume'
+  purpose: 'job_jd' | 'resume' | 'photo' | 'intro_video'
   original_filename: string
   content_type: string
   size_bytes: number
   sha256: string
-  uploaded_by_id: string
+  uploaded_by_id: string | null
   created_at: string
   updated_at: string
 }
@@ -42,6 +42,11 @@ export type Job = {
   jd_document_ref: string | null
   jd_document_id: string | null
   jd_document: DocumentRead | null
+  role_category: 'FACULTY' | 'NON_TEACHING'
+  application_config: Record<string, unknown>
+  intro_video_mode: 'NONE' | 'OPTIONAL' | 'REQUIRED'
+  assessment_template_version_id: string | null
+  source_reference: string | null
   recruiter_id: string
   hiring_manager_id: string
   department_reviewer_ids: string[]
@@ -67,6 +72,8 @@ export type Application = {
   submitted_at: string
   resume_document_ref: string | null
   resume_document_id: string | null
+  applied_designation: string | null
+  application_payload: Record<string, unknown>
   current_stage: ApplicationStage
   candidate: Candidate | null
   job_title: string | null
@@ -76,6 +83,11 @@ export type Application = {
   screening_score: number | null
   screening_eligibility: string | null
   evidence_completeness: number | null
+  assessment_status: string | null
+  assessment_score: number | null
+  assessment_completed_at: string | null
+  intro_video_status: string | null
+  interview_status: string | null
 }
 
 export type Candidate = {
@@ -90,6 +102,15 @@ export type Candidate = {
   resume_document_id: string | null
 }
 
+export type PublicApplicationSubmit = {
+  id: string
+  job_id: string
+  job_title: string
+  submitted_at: string
+  status_label: string
+  continuation_url: string | null
+}
+
 export type CandidateStatus = {
   id: string
   job_id: string
@@ -97,6 +118,41 @@ export type CandidateStatus = {
   submitted_at: string
   status_label: string
   resume_filename: string | null
+  progress: { label: string; status: string }[]
+  assessment: AssessmentAssignment | null
+  intro_video: Record<string, unknown> | null
+  interview: Record<string, unknown> | null
+}
+
+export type AssessmentQuestion = {
+  id: string
+  position: number
+  prompt: string
+  question_type: 'SINGLE_CHOICE' | 'MULTIPLE_CHOICE'
+  marks: number
+  options: { id: string; label: string; text: string; position: number }[]
+}
+
+export type AssessmentAttempt = {
+  id: string
+  assignment_id: string
+  application_id: string
+  status: string
+  started_at: string
+  submitted_at: string | null
+  questions: AssessmentQuestion[]
+}
+
+export type AssessmentAssignment = {
+  id: string
+  application_id: string
+  status: string
+  assigned_at: string
+  title: string
+  instructions: string
+  duration_minutes: number
+  attempt: AssessmentAttempt | null
+  result: Record<string, unknown> | null
 }
 
 export type RubricVersion = {
@@ -222,4 +278,8 @@ export type ScreeningDossier = {
     timestamp: string
     remarks: string
   }[]
+  application: Application | null
+  assessment: AssessmentAssignment | null
+  intro_video: Record<string, unknown> | null
+  interview: Record<string, unknown> | null
 }

@@ -1,8 +1,11 @@
 import type {
   Application,
+  AssessmentAssignment,
+  AssessmentAttempt,
   CandidateStatus,
   DocumentRead,
   Job,
+  PublicApplicationSubmit,
   RubricVersion,
   ScreeningDossier,
   ScreeningRun,
@@ -52,9 +55,6 @@ function readableError(detail: unknown, fallback: string) {
 }
 
 export const api = {
-  register(payload: { email: string; full_name: string; password: string }) {
-    return request<User>('/api/auth/register', { method: 'POST', body: payload })
-  },
   login(payload: { email: string; password: string }) {
     return request<User>('/api/auth/login', { method: 'POST', body: payload })
   },
@@ -109,6 +109,16 @@ export const api = {
     formData.append('file', file)
     return requestForm<DocumentRead>('/api/documents/resumes', formData)
   },
+  uploadPublicResume(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestForm<DocumentRead>('/api/documents/public/resumes', formData)
+  },
+  uploadPublicPhoto(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestForm<DocumentRead>('/api/documents/public/photos', formData)
+  },
   createRubricVersion(jobId: string, criteria: unknown[]) {
     return request<RubricVersion>('/api/jobs/' + jobId + '/rubric-versions', {
       method: 'POST',
@@ -133,6 +143,43 @@ export const api = {
       method: 'POST',
       body: payload
     })
+  },
+  publicApply(jobId: string, payload: unknown) {
+    return request<PublicApplicationSubmit>(`/api/applications/public/jobs/${jobId}/apply`, {
+      method: 'POST',
+      body: payload
+    })
+  },
+  exchangeApplicationAccess(token: string) {
+    return request<{ ok: boolean }>('/api/applications/application-access/exchange', {
+      method: 'POST',
+      body: { token }
+    })
+  },
+  applicationAccessStatus() {
+    return request<CandidateStatus>('/api/applications/application-access/application')
+  },
+  applicationAccessAssessment() {
+    return request<AssessmentAssignment | null>('/api/applications/application-access/assessment')
+  },
+  startApplicationAssessment(assignmentId: string) {
+    return request<AssessmentAttempt>(`/api/applications/application-access/assessments/${assignmentId}/start`, {
+      method: 'POST'
+    })
+  },
+  submitApplicationAssessment(attemptId: string, responses: { question_id: string; selected_option_ids: string[] }[]) {
+    return request<AssessmentAttempt>(`/api/applications/application-access/assessments/attempts/${attemptId}/submit`, {
+      method: 'POST',
+      body: { responses }
+    })
+  },
+  uploadIntroVideo(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestForm<Record<string, unknown>>('/api/applications/application-access/intro-video', formData)
+  },
+  skipIntroVideo() {
+    return request<Record<string, unknown>>('/api/applications/application-access/intro-video/skip', { method: 'POST' })
   },
   myApplications() {
     return request<CandidateStatus[]>('/api/applications/mine')

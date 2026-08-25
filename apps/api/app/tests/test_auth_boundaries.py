@@ -1,5 +1,4 @@
 from app.core.config import get_settings
-from app.models import Role
 
 
 def test_development_actor_provider_is_guarded(client, users):
@@ -17,7 +16,7 @@ def test_development_actor_provider_is_guarded(client, users):
     assert response.status_code == 403
 
 
-def test_candidate_can_register_login_and_logout(client):
+def test_public_candidate_registration_is_not_exposed(client):
     register = client.post(
         "/api/auth/register",
         json={
@@ -26,23 +25,20 @@ def test_candidate_can_register_login_and_logout(client):
             "password": "candidate-password",
         },
     )
-    assert register.status_code == 200, register.text
-    assert register.json()["roles"] == [Role.CANDIDATE.value]
+    assert register.status_code == 404
 
-    me = client.get("/api/auth/me")
-    assert me.status_code == 200
-    assert me.json()["email"] == "new.candidate@example.org"
+
+def test_staff_login_and_logout(client, users):
+    login = client.post(
+        "/api/auth/login",
+        json={"email": users["recruiter"]["email"], "password": "recruiter-password"},
+    )
+    assert login.status_code == 200
+    assert client.get("/api/auth/me").json()["email"] == users["recruiter"]["email"]
 
     logout = client.post("/api/auth/logout")
     assert logout.status_code == 200
     assert client.get("/api/auth/me").status_code == 401
-
-    login = client.post(
-        "/api/auth/login",
-        json={"email": "new.candidate@example.org", "password": "candidate-password"},
-    )
-    assert login.status_code == 200
-    assert client.get("/api/auth/me").json()["email"] == "new.candidate@example.org"
 
 
 def test_anonymous_can_view_public_jobs_but_not_staff_apis(client, published_job):

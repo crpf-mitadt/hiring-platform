@@ -17,3 +17,17 @@ def api_upload_resume(db: DbDep, actor: ActorDep, file: Annotated[UploadFile, Fi
     document = store_upload(db, actor, file, DocumentPurpose.RESUME)
     db.commit()
     return document
+
+
+@router.post("/public/resumes", response_model=DocumentRead)
+def api_public_upload_resume(db: DbDep, file: Annotated[UploadFile, File()]):
+    document = store_upload(db, None, file, DocumentPurpose.RESUME)
+    db.commit()
+    return document
+
+
+@router.post("/public/photos", response_model=DocumentRead)
+def api_public_upload_photo(db: DbDep, file: Annotated[UploadFile, File()]):
+    document = store_upload(db, None, file, DocumentPurpose.PHOTO)
+    db.commit()
+    return document

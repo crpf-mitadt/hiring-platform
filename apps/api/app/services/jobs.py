@@ -62,6 +62,11 @@ def create_job(db: Session, actor: User, data: JobCreate) -> Job:
         description=data.description,
         jd_document_ref=data.jd_document_ref,
         jd_document_id=data.jd_document_id,
+        role_category=data.role_category,
+        application_config=data.application_config,
+        intro_video_mode=data.intro_video_mode,
+        assessment_template_version_id=data.assessment_template_version_id,
+        source_reference=data.source_reference,
         recruiter_id=data.recruiter_id,
         hiring_manager_id=data.hiring_manager_id,
     )

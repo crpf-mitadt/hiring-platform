@@ -1,5 +1,21 @@
+from app.models.application_access import ApplicationAccessSession, ApplicationAccessToken
+from app.models.assessment import (
+    AssessmentAssignment,
+    AssessmentAssignmentStatus,
+    AssessmentAttempt,
+    AssessmentAttemptStatus,
+    AssessmentOption,
+    AssessmentQuestion,
+    AssessmentQuestionType,
+    AssessmentResponse,
+    AssessmentResult,
+    AssessmentTemplate,
+    AssessmentTemplateStatus,
+    AssessmentTemplateVersion,
+)
 from app.models.audit import AuditEvent
 from app.models.document import Document, DocumentPurpose
+from app.models.followup import ApplicationIntroVideo, InterviewSchedule, InterviewStatus, IntroVideoStatus
 from app.models.organization import Department, School
 from app.models.recruitment import (
     Application,
@@ -8,8 +24,10 @@ from app.models.recruitment import (
     Candidate,
     HiringDecision,
     HiringDecisionType,
+    IntroVideoMode,
     Job,
     JobReviewer,
+    JobRoleCategory,
     JobRubric,
     JobRubricVersion,
     JobStatus,
@@ -27,8 +45,23 @@ from app.models.user import Role, User, UserRole, UserSession
 
 __all__ = [
     "Application",
+    "ApplicationAccessSession",
+    "ApplicationAccessToken",
+    "ApplicationIntroVideo",
     "ApplicationStage",
     "ApplicationStageHistory",
+    "AssessmentAssignment",
+    "AssessmentAssignmentStatus",
+    "AssessmentAttempt",
+    "AssessmentAttemptStatus",
+    "AssessmentOption",
+    "AssessmentQuestion",
+    "AssessmentQuestionType",
+    "AssessmentResponse",
+    "AssessmentResult",
+    "AssessmentTemplate",
+    "AssessmentTemplateStatus",
+    "AssessmentTemplateVersion",
     "AuditEvent",
     "Candidate",
     "Department",
@@ -36,7 +69,12 @@ __all__ = [
     "DocumentPurpose",
     "HiringDecision",
     "HiringDecisionType",
+    "InterviewSchedule",
+    "InterviewStatus",
+    "IntroVideoMode",
+    "IntroVideoStatus",
     "Job",
+    "JobRoleCategory",
     "JobReviewer",
     "JobRubric",
     "JobRubricVersion",

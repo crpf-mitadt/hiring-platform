@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from app.models import JobStatus
+from app.models import IntroVideoMode, JobRoleCategory, JobStatus
 from app.schemas.common import ApiModel
 from app.schemas.documents import DocumentRead
 
@@ -38,6 +38,11 @@ class JobBase(ApiModel):
     description: str = ""
     jd_document_ref: str | None = None
     jd_document_id: str | None = None
+    role_category: JobRoleCategory = JobRoleCategory.NON_TEACHING
+    application_config: dict = {}
+    intro_video_mode: IntroVideoMode = IntroVideoMode.NONE
+    assessment_template_version_id: str | None = None
+    source_reference: str | None = None
     recruiter_id: str
     hiring_manager_id: str
     department_reviewer_ids: list[str] = []
@@ -58,6 +63,11 @@ class JobUpdate(ApiModel):
     description: str | None = None
     jd_document_ref: str | None = None
     jd_document_id: str | None = None
+    role_category: JobRoleCategory | None = None
+    application_config: dict | None = None
+    intro_video_mode: IntroVideoMode | None = None
+    assessment_template_version_id: str | None = None
+    source_reference: str | None = None
     hiring_manager_id: str | None = None
     department_reviewer_ids: list[str] | None = None
 

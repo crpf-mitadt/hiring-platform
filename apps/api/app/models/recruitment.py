@@ -36,6 +36,17 @@ class HiringDecisionType(str, enum.Enum):
     ANOTHER_ROUND = "another_round"
 
 
+class JobRoleCategory(str, enum.Enum):
+    FACULTY = "FACULTY"
+    NON_TEACHING = "NON_TEACHING"
+
+
+class IntroVideoMode(str, enum.Enum):
+    NONE = "NONE"
+    OPTIONAL = "OPTIONAL"
+    REQUIRED = "REQUIRED"
+
+
 class RubricVersionStatus(str, enum.Enum):
     DRAFT = "DRAFT"
     PROPOSED = "PROPOSED"
@@ -59,6 +70,22 @@ class Job(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     jd_document_ref: Mapped[str | None] = mapped_column(String(500))
     jd_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
+    role_category: Mapped[JobRoleCategory] = mapped_column(
+        Enum(JobRoleCategory, name="job_role_category"),
+        default=JobRoleCategory.NON_TEACHING,
+        nullable=False,
+        index=True,
+    )
+    application_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    intro_video_mode: Mapped[IntroVideoMode] = mapped_column(
+        Enum(IntroVideoMode, name="intro_video_mode"),
+        default=IntroVideoMode.NONE,
+        nullable=False,
+    )
+    assessment_template_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assessment_template_versions.id"), nullable=True, index=True
+    )
+    source_reference: Mapped[str | None] = mapped_column(String(500))
     recruiter_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     hiring_manager_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     status: Mapped[JobStatus] = mapped_column(
@@ -74,6 +101,7 @@ class Job(Base, TimestampMixin):
         back_populates="job", cascade="all, delete-orphan", lazy="selectin"
     )
     rubrics: Mapped[list["JobRubric"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    applications: Mapped[list["Application"]] = relationship(back_populates="job")
 
 
 class JobReviewer(Base):
@@ -158,6 +186,10 @@ class Application(Base, TimestampMixin):
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     resume_document_ref: Mapped[str | None] = mapped_column(String(500))
     resume_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
+    applied_designation: Mapped[str | None] = mapped_column(String(200))
+    photo_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
+    application_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    scoring_safe_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     current_stage: Mapped[ApplicationStage] = mapped_column(
         Enum(ApplicationStage, name="application_stage"),
         default=ApplicationStage.APPLICATION_RECEIVED,
@@ -166,8 +198,9 @@ class Application(Base, TimestampMixin):
     )
 
     candidate: Mapped[Candidate] = relationship(back_populates="applications")
-    job: Mapped[Job] = relationship()
+    job: Mapped[Job] = relationship(back_populates="applications")
     resume_document = relationship("Document", foreign_keys=[resume_document_id])
+    photo_document = relationship("Document", foreign_keys=[photo_document_id])
     stage_history: Mapped[list["ApplicationStageHistory"]] = relationship(
         back_populates="application", cascade="all, delete-orphan", order_by="ApplicationStageHistory.timestamp"
     )

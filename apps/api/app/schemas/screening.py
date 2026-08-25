@@ -114,3 +114,7 @@ class ScreeningDossierRead(ApiModel):
     screening_runs: list[ScreeningRunRead]
     stage_history: list[StageHistoryDossierRead]
     decisions: list[HiringDecisionDossierRead]
+    application: dict | None = None
+    assessment: dict | None = None
+    intro_video: dict | None = None
+    interview: dict | None = None
