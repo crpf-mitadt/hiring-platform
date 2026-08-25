@@ -5,7 +5,6 @@ import type {
   Job,
   RubricVersion,
   ScreeningDossier,
-  ScreeningJob,
   ScreeningRun,
   User
 } from './types'
@@ -13,7 +12,6 @@ import type {
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 
 type RequestOptions = {
-  actorId?: string
   method?: string
   body?: unknown
 }
@@ -21,38 +19,50 @@ type RequestOptions = {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: options.method ?? 'GET',
+    credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
-      ...(options.actorId ? { 'X-Actor-Id': options.actorId } : {})
+      'Content-Type': 'application/json'
     },
     body: options.body ? JSON.stringify(options.body) : undefined
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail))
+    throw new Error(readableError(payload.detail, response.statusText))
   }
   return response.json()
 }
 
-async function requestForm<T>(path: string, actorId: string, formData: FormData): Promise<T> {
+async function requestForm<T>(path: string, formData: FormData): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'X-Actor-Id': actorId },
+    credentials: 'include',
     body: formData
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail))
+    throw new Error(readableError(payload.detail, response.statusText))
   }
   return response.json()
 }
 
+function readableError(detail: unknown, fallback: string) {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return 'We could not complete the request. Check the required fields and try again.'
+  return fallback || 'Request failed. Please try again.'
+}
+
 export const api = {
-  createUser(payload: { email: string; full_name: string; roles: string[] }) {
-    return request<User>('/api/users', { method: 'POST', body: payload })
+  register(payload: { email: string; full_name: string; password: string }) {
+    return request<User>('/api/auth/register', { method: 'POST', body: payload })
   },
-  listUsers() {
-    return request<User[]>('/api/users')
+  login(payload: { email: string; password: string }) {
+    return request<User>('/api/auth/login', { method: 'POST', body: payload })
+  },
+  logout() {
+    return request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' })
+  },
+  me() {
+    return request<User>('/api/auth/me')
   },
   createSchool(name: string) {
     return request<{ id: string; name: string }>('/api/schools', { method: 'POST', body: { name } })
@@ -63,41 +73,44 @@ export const api = {
       body: payload
     })
   },
-  dashboard(actorId: string) {
-    return request<Record<string, number>>('/api/dashboard/recruitment', { actorId })
+  dashboard() {
+    return request<Record<string, number>>('/api/dashboard/recruitment')
   },
-  listJobs(actorId: string, params: URLSearchParams = new URLSearchParams()) {
+  listJobs(params: URLSearchParams = new URLSearchParams()) {
     const query = params.toString()
-    return request<Job[]>(`/api/jobs${query ? `?${query}` : ''}`, { actorId })
+    return request<Job[]>(`/api/jobs${query ? `?${query}` : ''}`)
   },
-  publicJobs() {
-    return request<Job[]>('/api/public/jobs')
+  publicJobs(params: URLSearchParams = new URLSearchParams()) {
+    const query = params.toString()
+    return request<Job[]>(`/api/public/jobs${query ? `?${query}` : ''}`)
   },
-  createJob(actorId: string, payload: Partial<Job>) {
-    return request<Job>('/api/jobs', { actorId, method: 'POST', body: payload })
+  publicJob(jobId: string) {
+    return request<Job>(`/api/public/jobs/${jobId}`)
   },
-  updateJob(actorId: string, jobId: string, payload: Partial<Job>) {
-    return request<Job>(`/api/jobs/${jobId}`, { actorId, method: 'PATCH', body: payload })
+  createJob(payload: Partial<Job>) {
+    return request<Job>('/api/jobs', { method: 'POST', body: payload })
   },
-  publishJob(actorId: string, jobId: string) {
-    return request<Job>(`/api/jobs/${jobId}/publish`, { actorId, method: 'POST' })
+  updateJob(jobId: string, payload: Partial<Job>) {
+    return request<Job>(`/api/jobs/${jobId}`, { method: 'PATCH', body: payload })
   },
-  closeJob(actorId: string, jobId: string) {
-    return request<Job>(`/api/jobs/${jobId}/close`, { actorId, method: 'POST' })
+  publishJob(jobId: string) {
+    return request<Job>(`/api/jobs/${jobId}/publish`, { method: 'POST' })
   },
-  uploadJobJd(actorId: string, jobId: string, file: File) {
+  closeJob(jobId: string) {
+    return request<Job>(`/api/jobs/${jobId}/close`, { method: 'POST' })
+  },
+  uploadJobJd(jobId: string, file: File) {
     const formData = new FormData()
     formData.append('file', file)
-    return requestForm<Job>(`/api/jobs/${jobId}/jd-document`, actorId, formData)
+    return requestForm<Job>(`/api/jobs/${jobId}/jd-document`, formData)
   },
-  uploadResume(actorId: string, file: File) {
+  uploadResume(file: File) {
     const formData = new FormData()
     formData.append('file', file)
-    return requestForm<DocumentRead>('/api/documents/resumes', actorId, formData)
+    return requestForm<DocumentRead>('/api/documents/resumes', formData)
   },
-  createRubricVersion(actorId: string, jobId: string, criteria: unknown[]) {
+  createRubricVersion(jobId: string, criteria: unknown[]) {
     return request<RubricVersion>('/api/jobs/' + jobId + '/rubric-versions', {
-      actorId,
       method: 'POST',
       body: {
         criteria,
@@ -106,53 +119,41 @@ export const api = {
       }
     })
   },
-  generateRubricVersion(actorId: string, jobId: string) {
-    return request<RubricVersion>(`/api/jobs/${jobId}/generate-rubric`, { actorId, method: 'POST' })
+  generateRubricVersion(jobId: string) {
+    return request<RubricVersion>(`/api/jobs/${jobId}/generate-rubric`, { method: 'POST' })
   },
-  listRubricVersions(actorId: string, jobId: string) {
-    return request<RubricVersion[]>(`/api/jobs/${jobId}/rubric-versions`, { actorId })
+  listRubricVersions(jobId: string) {
+    return request<RubricVersion[]>(`/api/jobs/${jobId}/rubric-versions`)
   },
-  approveRubricVersion(actorId: string, versionId: string) {
-    return request<RubricVersion>(`/api/rubric-versions/${versionId}/approve`, { actorId, method: 'POST' })
+  approveRubricVersion(versionId: string) {
+    return request<RubricVersion>(`/api/rubric-versions/${versionId}/approve`, { method: 'POST' })
   },
-  apply(actorId: string, jobId: string, payload: unknown) {
+  apply(jobId: string, payload: unknown) {
     return request<Application>(`/api/applications/jobs/${jobId}/apply`, {
-      actorId,
       method: 'POST',
       body: payload
     })
   },
-  myApplications(actorId: string) {
-    return request<CandidateStatus[]>('/api/applications/mine', { actorId })
+  myApplications() {
+    return request<CandidateStatus[]>('/api/applications/mine')
   },
-  listApplications(actorId: string, params: URLSearchParams = new URLSearchParams()) {
+  listApplications(params: URLSearchParams = new URLSearchParams()) {
     const query = params.toString()
-    return request<Application[]>(`/api/applications${query ? `?${query}` : ''}`, { actorId })
+    return request<Application[]>(`/api/applications${query ? `?${query}` : ''}`)
   },
-  startScreening(actorId: string, applicationId: string) {
-    return request<ScreeningRun>(`/api/applications/${applicationId}/screening-runs`, {
-      actorId,
-      method: 'POST'
-    })
-  },
-  runNextScreeningJob(actorId: string) {
-    return request<ScreeningJob | null>('/api/screening-jobs/run-next', { actorId, method: 'POST' })
-  },
-  retryScreening(actorId: string, runId: string) {
+  retryScreening(runId: string) {
     return request<ScreeningRun>(`/api/applications/screening-runs/${runId}/retry`, {
-      actorId,
       method: 'POST'
     })
   },
-  screeningRuns(actorId: string, applicationId: string) {
-    return request<ScreeningRun[]>(`/api/applications/${applicationId}/screening`, { actorId })
+  screeningRuns(applicationId: string) {
+    return request<ScreeningRun[]>(`/api/applications/${applicationId}/screening`)
   },
-  screeningDossier(actorId: string, applicationId: string) {
-    return request<ScreeningDossier>(`/api/applications/${applicationId}/screening-dossier`, { actorId })
+  screeningDossier(applicationId: string) {
+    return request<ScreeningDossier>(`/api/applications/${applicationId}/screening-dossier`)
   },
-  transition(actorId: string, applicationId: string, action: string, remarks: string) {
+  transition(applicationId: string, action: string, remarks: string) {
     return request<Application>(`/api/applications/${applicationId}/${action}`, {
-      actorId,
       method: 'POST',
       body: { remarks }
     })

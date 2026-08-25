@@ -68,6 +68,26 @@ export type Application = {
   resume_document_ref: string | null
   resume_document_id: string | null
   current_stage: ApplicationStage
+  candidate: Candidate | null
+  job_title: string | null
+  job_department_id: string | null
+  job_location: string | null
+  screening_status: ScreeningRun['run_status'] | null
+  screening_score: number | null
+  screening_eligibility: string | null
+  evidence_completeness: number | null
+}
+
+export type Candidate = {
+  id: string
+  user_id: string | null
+  full_name: string
+  email: string
+  phone: string | null
+  education_profile: Record<string, unknown>
+  work_experience_profile: Record<string, unknown>
+  resume_document_ref: string | null
+  resume_document_id: string | null
 }
 
 export type CandidateStatus = {

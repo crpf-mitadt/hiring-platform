@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Badge, Button, TextInput, Textarea } from 'frappe-ui'
+import { Badge, Button, FormControl, Textarea } from 'frappe-ui'
 import {
   Briefcase,
+  CalendarClock,
+  CheckCircle2,
   ClipboardCheck,
   FileSearch,
+  GraduationCap,
   LayoutDashboard,
-  ListFilter,
-  RotateCcw,
-  Upload,
-  UserRound
+  LogOut,
+  Search,
+  UserRound,
+  UsersRound
 } from 'lucide-vue-next'
 import StatusBadge from './components/StatusBadge.vue'
 import { api } from './api/client'
@@ -20,77 +23,126 @@ import type {
   Job,
   RubricVersion,
   ScreeningDossier,
-  ScreeningRun,
   User
 } from './api/types'
 
-type Page =
-  | 'dashboard'
-  | 'jobs'
-  | 'jobWorkspace'
-  | 'applications'
-  | 'candidateWorkspace'
+type RouteName =
+  | 'publicHome'
+  | 'publicJobs'
+  | 'publicJobDetail'
+  | 'login'
+  | 'register'
   | 'candidateJobs'
-  | 'candidateDetail'
-  | 'candidateApply'
-  | 'myApplications'
+  | 'candidateApplications'
+  | 'candidateAssessments'
+  | 'candidateInterviews'
+  | 'candidateProfile'
+  | 'staffDashboard'
+  | 'staffJobs'
+  | 'staffJobWorkspace'
+  | 'staffApplications'
+  | 'staffApplicationWorkspace'
+  | 'staffScreeningReview'
+  | 'staffAssessments'
+  | 'staffInterviews'
+  | 'staffFinalDecisions'
 
-const page = ref<Page>('dashboard')
-const users = ref<User[]>([])
-const actorId = ref('')
-const jobs = ref<Job[]>([])
+const route = ref<RouteName>('publicHome')
+const routeJobId = ref<string | null>(null)
+const routeApplicationId = ref<string | null>(null)
+const currentUser = ref<User | null>(null)
+const publicJobs = ref<Job[]>([])
+const staffJobs = ref<Job[]>([])
 const applications = ref<Application[]>([])
 const myApplications = ref<CandidateStatus[]>([])
 const selectedJob = ref<Job | null>(null)
 const selectedApplication = ref<Application | null>(null)
-const screeningRuns = ref<ScreeningRun[]>([])
 const rubricVersions = ref<RubricVersion[]>([])
 const dossier = ref<ScreeningDossier | null>(null)
 const dashboard = ref<Record<string, number>>({})
 const message = ref('')
+const errorMessage = ref('')
 const loading = ref(false)
-const jobFilter = reactive({ search: '', status: '' })
-const applicationFilter = reactive({ job_id: '', stage: '' })
-const remarks = ref('')
-const jdFile = ref<File | null>(null)
+const showJobEditor = ref(false)
+const activeJobTab = ref<'overview' | 'rubric' | 'applications' | 'activity'>('overview')
+const activeApplicationTab = ref<'overview' | 'screening' | 'assessment' | 'interview' | 'history'>('overview')
 const resumeFile = ref<File | null>(null)
+const jdFile = ref<File | null>(null)
+const remarks = ref('')
 
+const publicFilter = reactive({ search: '', department: '', location: '', employment_type: '' })
+const staffJobFilter = reactive({ search: '', status: '', location: '' })
+const applicationFilter = reactive({ search: '', job_id: '', stage: '' })
+const loginForm = reactive({ email: '', password: '' })
+const registerForm = reactive({ full_name: '', email: '', password: '' })
+const applyForm = reactive({ full_name: '', email: '', phone: '' })
 const jobForm = reactive({
-  title: 'Assistant Professor',
-  designation: 'Assistant Professor',
+  title: '',
+  designation: '',
   employment_type: 'Full Time',
   vacancy_count: 1,
-  location: 'Pune',
-  description: 'Synthetic role description for platform workflow testing.',
-  jd_document_ref: 'synthetic-jd-ref'
+  location: '',
+  description: '',
+  jd_document_ref: ''
 })
 
-const applyForm = reactive({
-  full_name: 'Synthetic Candidate',
-  email: 'candidate@example.org',
-  phone: '0000000000',
-  resume_document_ref: 'synthetic-resume-ref'
-})
-
-const currentActor = computed(() => users.value.find((user) => user.id === actorId.value) ?? null)
-const staffActor = computed(() => currentActor.value?.roles.some((role) => role !== 'candidate') ?? false)
-const candidateActor = computed(() => currentActor.value?.roles.includes('candidate') ?? false)
-const latestScreening = computed(() => screeningRuns.value[0] ?? null)
+const isCandidate = computed(() => currentUser.value?.roles.includes('candidate') ?? false)
+const isStaff = computed(
+  () => currentUser.value?.roles.some((role) => role !== 'candidate') ?? false
+)
+const latestScreening = computed(() => dossier.value?.screening_runs[0] ?? null)
 const approvedRubric = computed(() => rubricVersions.value.find((version) => version.status === 'APPROVED') ?? null)
 
-const staffNav = [
-  { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'jobs', label: 'Jobs', icon: Briefcase },
-  { key: 'applications', label: 'Applications', icon: ClipboardCheck },
-  { key: 'candidateWorkspace', label: 'Screening Review', icon: FileSearch }
-] as const
+const publicFilteredJobs = computed(() =>
+  publicJobs.value.filter((job) => {
+    const haystack = `${job.title} ${job.designation} ${job.location} ${job.employment_type}`.toLowerCase()
+    return (
+      (!publicFilter.search || haystack.includes(publicFilter.search.toLowerCase())) &&
+      (!publicFilter.location || job.location === publicFilter.location) &&
+      (!publicFilter.employment_type || job.employment_type === publicFilter.employment_type)
+    )
+  })
+)
+
+const staffFilteredApplications = computed(() =>
+  applications.value.filter((application) => {
+    const candidate = application.candidate?.full_name ?? ''
+    const job = application.job_title ?? ''
+    const haystack = `${candidate} ${job}`.toLowerCase()
+    return !applicationFilter.search || haystack.includes(applicationFilter.search.toLowerCase())
+  })
+)
+
+const staffNav = computed(() => [
+  { route: 'staffDashboard' as const, label: 'Dashboard', icon: LayoutDashboard, count: null },
+  { route: 'staffJobs' as const, label: 'Jobs', icon: Briefcase, count: dashboard.value.open_jobs ?? null },
+  {
+    route: 'staffApplications' as const,
+    label: 'Applications',
+    icon: ClipboardCheck,
+    count: dashboard.value.applications_received ?? null
+  },
+  {
+    route: 'staffScreeningReview' as const,
+    label: 'Screening Review',
+    icon: FileSearch,
+    count: dashboard.value.screening_reviews_pending ?? null
+  },
+  { route: 'staffAssessments' as const, label: 'Assessments', icon: CheckCircle2, count: null },
+  { route: 'staffInterviews' as const, label: 'Interviews', icon: CalendarClock, count: null },
+  { route: 'staffFinalDecisions' as const, label: 'Final Decisions', icon: UsersRound, count: null }
+])
 
 const candidateNav = [
-  { key: 'candidateJobs', label: 'Jobs', icon: Briefcase },
-  { key: 'myApplications', label: 'My Applications', icon: UserRound }
-] as const
+  { route: 'candidateJobs' as const, label: 'Jobs', icon: Briefcase },
+  { route: 'candidateApplications' as const, label: 'My Applications', icon: ClipboardCheck },
+  { route: 'candidateAssessments' as const, label: 'Assessments', icon: CheckCircle2 },
+  { route: 'candidateInterviews' as const, label: 'Interviews', icon: CalendarClock },
+  { route: 'candidateProfile' as const, label: 'Profile', icon: UserRound }
+]
 
 const applicationStages: ApplicationStage[] = [
+  'APPLICATION_RECEIVED',
   'SCREENING_PENDING',
   'SCREENING_RUNNING',
   'SCREENING_COMPLETE',
@@ -100,664 +152,757 @@ const applicationStages: ApplicationStage[] = [
   'NOT_PROGRESSED_AFTER_SCREENING'
 ]
 
-function setPage(nextPage: Page) {
-  page.value = nextPage
+function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId?: string } = {}) {
+  route.value = nextRoute
+  routeJobId.value = options.jobId ?? null
+  routeApplicationId.value = options.applicationId ?? null
+  const path = pathForRoute(nextRoute, options)
+  if (globalThis.location.pathname !== path) globalThis.history.pushState({}, '', path)
+  void loadForRoute()
 }
 
-function actorHeadersRequired() {
-  if (!actorId.value) throw new Error('Select an actor first.')
+function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicationId?: string } = {}) {
+  const paths: Record<RouteName, string> = {
+    publicHome: '/',
+    publicJobs: '/jobs',
+    publicJobDetail: `/jobs/${options.jobId ?? routeJobId.value ?? ''}`,
+    login: '/login',
+    register: '/register',
+    candidateJobs: '/candidate/jobs',
+    candidateApplications: '/candidate/applications',
+    candidateAssessments: '/candidate/assessments',
+    candidateInterviews: '/candidate/interviews',
+    candidateProfile: '/candidate/profile',
+    staffDashboard: '/app',
+    staffJobs: '/app/jobs',
+    staffJobWorkspace: `/app/jobs/${options.jobId ?? routeJobId.value ?? ''}`,
+    staffApplications: '/app/applications',
+    staffApplicationWorkspace: `/app/applications/${options.applicationId ?? routeApplicationId.value ?? ''}`,
+    staffScreeningReview: '/app/screening-review',
+    staffAssessments: '/app/assessments',
+    staffInterviews: '/app/interviews',
+    staffFinalDecisions: '/app/final-decisions'
+  }
+  return paths[nextRoute]
+}
+
+function routeFromLocation() {
+  const path = globalThis.location.pathname
+  if (path === '/login') return 'login'
+  if (path === '/register') return 'register'
+  if (path === '/jobs') return 'publicJobs'
+  if (path.startsWith('/jobs/')) {
+    routeJobId.value = path.split('/')[2]
+    return 'publicJobDetail'
+  }
+  if (path === '/candidate/jobs') return 'candidateJobs'
+  if (path === '/candidate/applications') return 'candidateApplications'
+  if (path === '/candidate/assessments') return 'candidateAssessments'
+  if (path === '/candidate/interviews') return 'candidateInterviews'
+  if (path === '/candidate/profile') return 'candidateProfile'
+  if (path === '/app/jobs') return 'staffJobs'
+  if (path.startsWith('/app/jobs/')) {
+    routeJobId.value = path.split('/')[3]
+    return 'staffJobWorkspace'
+  }
+  if (path === '/app/applications') return 'staffApplications'
+  if (path.startsWith('/app/applications/')) {
+    routeApplicationId.value = path.split('/')[3]
+    return 'staffApplicationWorkspace'
+  }
+  if (path === '/app/screening-review') return 'staffScreeningReview'
+  if (path === '/app/assessments') return 'staffAssessments'
+  if (path === '/app/interviews') return 'staffInterviews'
+  if (path === '/app/final-decisions') return 'staffFinalDecisions'
+  if (path === '/app') return 'staffDashboard'
+  return 'publicHome'
 }
 
 async function run<T>(task: () => Promise<T>, success?: string): Promise<T | null> {
   loading.value = true
   message.value = ''
+  errorMessage.value = ''
   try {
     const result = await task()
     if (success) message.value = success
     return result
   } catch (error) {
-    message.value = error instanceof Error ? error.message : 'Request failed'
+    errorMessage.value = error instanceof Error ? error.message : 'Request failed. Please try again.'
     return null
   } finally {
     loading.value = false
   }
 }
 
-function selectedFile(event: Event): File | null {
-  const input = event.target as HTMLInputElement
-  return input.files?.[0] ?? null
-}
-
-function setResumeFile(event: Event) {
-  resumeFile.value = selectedFile(event)
-}
-
 async function bootstrap() {
+  route.value = routeFromLocation()
+  globalThis.addEventListener('popstate', () => {
+    route.value = routeFromLocation()
+    void loadForRoute()
+  })
   await run(async () => {
-    const existing = await api.listUsers()
-    if (existing.length > 0) {
-      users.value = existing
-      actorId.value = existing[0].id
-      return
-    }
-    const recruiter = await api.createUser({
-      email: 'recruiter@example.org',
-      full_name: 'Synthetic Recruiter',
-      roles: ['hr_recruiter']
-    })
-    const reviewer = await api.createUser({
-      email: 'reviewer@example.org',
-      full_name: 'Synthetic Reviewer',
-      roles: ['department_reviewer']
-    })
-    const candidate = await api.createUser({
-      email: 'candidate@example.org',
-      full_name: 'Synthetic Candidate',
-      roles: ['candidate']
-    })
-    const school = await api.createSchool('Synthetic School')
-    const department = await api.createDepartment({ school_id: school.id, name: 'Synthetic Department' })
-    const job = await api.createJob(recruiter.id, {
-      ...jobForm,
-      school_id: school.id,
-      department_id: department.id,
-      recruiter_id: recruiter.id,
-      hiring_manager_id: reviewer.id,
-      department_reviewer_ids: [reviewer.id]
-    })
-    const jd = new File(
-      ['Synthetic assistant professor JD for local platform development.'],
-      'synthetic-assistant-professor-jd.txt',
-      { type: 'text/plain' }
-    )
-    const jobWithJd = await api.uploadJobJd(recruiter.id, job.id, jd)
-    const version = await api.generateRubricVersion(recruiter.id, jobWithJd.id)
-    await api.approveRubricVersion(recruiter.id, version.id)
-    await api.publishJob(recruiter.id, jobWithJd.id)
-    users.value = [recruiter, reviewer, candidate]
-    actorId.value = recruiter.id
-  }, 'Synthetic workspace ready.')
-  await refreshAll()
+    currentUser.value = await api.me()
+  })
+  if (!currentUser.value && route.value.toString().startsWith('staff')) route.value = 'login'
+  await loadForRoute()
 }
 
-async function refreshAll() {
-  await refreshJobs()
-  if (staffActor.value) {
-    await refreshDashboard()
-    await refreshApplications()
+async function loadForRoute() {
+  if (route.value === 'publicHome' || route.value === 'publicJobs') await loadPublicJobs()
+  if (route.value === 'publicJobDetail' && routeJobId.value) await loadPublicJob(routeJobId.value)
+  if (isCandidate.value && route.value.startsWith('candidate')) {
+    await loadPublicJobs()
+    await loadMyApplications()
   }
-  if (candidateActor.value) await refreshMine()
+  if (isStaff.value && route.value.startsWith('staff')) {
+    await Promise.all([loadDashboard(), loadStaffJobs(), loadApplications()])
+  }
+  if (route.value === 'staffJobWorkspace' && routeJobId.value) await openStaffJob(routeJobId.value)
+  if (route.value === 'staffApplicationWorkspace' && routeApplicationId.value) {
+    await openApplicationWorkspace(routeApplicationId.value)
+  }
+  if (route.value === 'staffScreeningReview') await loadApplications()
 }
 
-async function refreshDashboard() {
-  actorHeadersRequired()
-  const data = await run(() => api.dashboard(actorId.value))
+async function loadPublicJobs() {
+  const params = new URLSearchParams()
+  if (publicFilter.search) params.set('search', publicFilter.search)
+  const jobs = await run(() => api.publicJobs(params))
+  if (jobs) publicJobs.value = jobs
+}
+
+async function loadPublicJob(jobId: string) {
+  const job = await run(() => api.publicJob(jobId))
+  if (job) selectedJob.value = job
+}
+
+async function loadDashboard() {
+  const data = await run(() => api.dashboard())
   if (data) dashboard.value = data
 }
 
-async function refreshJobs() {
+async function loadStaffJobs() {
   const params = new URLSearchParams()
-  if (jobFilter.search) params.set('search', jobFilter.search)
-  if (jobFilter.status) params.set('status', jobFilter.status)
-  const data = await run(() => (candidateActor.value ? api.publicJobs() : api.listJobs(actorId.value, params)))
-  if (data) jobs.value = data
+  if (staffJobFilter.search) params.set('search', staffJobFilter.search)
+  if (staffJobFilter.status) params.set('status', staffJobFilter.status)
+  const jobs = await run(() => api.listJobs(params))
+  if (jobs) staffJobs.value = jobs
+}
+
+async function loadApplications() {
+  const params = new URLSearchParams()
+  if (applicationFilter.job_id) params.set('job_id', applicationFilter.job_id)
+  if (applicationFilter.stage) params.set('stage', applicationFilter.stage)
+  const rows = await run(() => api.listApplications(params))
+  if (rows) applications.value = rows
+}
+
+async function loadMyApplications() {
+  const rows = await run(() => api.myApplications())
+  if (rows) myApplications.value = rows
+}
+
+async function login() {
+  const user = await run(() => api.login(loginForm), 'Signed in.')
+  if (!user) return
+  currentUser.value = user
+  navigate(user.roles.includes('candidate') && user.roles.length === 1 ? 'candidateApplications' : 'staffDashboard')
+}
+
+async function register() {
+  const user = await run(() => api.register(registerForm), 'Account created.')
+  if (!user) return
+  currentUser.value = user
+  Object.assign(applyForm, { full_name: user.full_name, email: user.email })
+  navigate('candidateJobs')
+}
+
+async function logout() {
+  await run(() => api.logout(), 'Signed out.')
+  currentUser.value = null
+  selectedApplication.value = null
+  dossier.value = null
+  navigate('publicHome')
 }
 
 async function createJob() {
-  actorHeadersRequired()
-  const sampleJob = jobs.value[0]
-  if (!sampleJob) throw new Error('Bootstrap the workspace before creating more jobs.')
-  const created = await run(
+  const sample = staffJobs.value[0]
+  if (!sample) {
+    errorMessage.value = 'Create a school and department before creating jobs.'
+    return
+  }
+  const job = await run(
     () =>
-      api.createJob(actorId.value, {
+      api.createJob({
         ...jobForm,
-        school_id: sampleJob.school_id,
-        department_id: sampleJob.department_id,
-        recruiter_id: actorId.value,
-        hiring_manager_id: sampleJob.hiring_manager_id,
-        department_reviewer_ids: sampleJob.department_reviewer_ids
+        school_id: sample.school_id,
+        department_id: sample.department_id,
+        recruiter_id: currentUser.value?.id,
+        hiring_manager_id: sample.hiring_manager_id,
+        department_reviewer_ids: sample.department_reviewer_ids
       }),
-    'Job created.'
+    'Job draft created.'
   )
-  if (created) {
-    selectedJob.value = created
-    rubricVersions.value = []
-    page.value = 'jobWorkspace'
-    await refreshJobs()
+  if (job) {
+    showJobEditor.value = false
+    navigate('staffJobWorkspace', { jobId: job.id })
   }
 }
 
 async function saveDraft() {
   if (!selectedJob.value) return
-  const updated = await run(() => api.updateJob(actorId.value, selectedJob.value!.id, jobForm), 'Draft saved.')
-  if (updated) {
-    selectedJob.value = updated
-    await refreshJobs()
-  }
+  const job = await run(() => api.updateJob(selectedJob.value!.id, jobForm), 'Draft saved.')
+  if (job) selectedJob.value = job
 }
 
-async function publishJob(job: Job) {
-  const updated = await run(() => api.publishJob(actorId.value, job.id), 'Job published.')
-  if (updated) {
-    selectedJob.value = updated
-    await refreshJobs()
-  }
-}
-
-async function closeJob(job: Job) {
-  const updated = await run(() => api.closeJob(actorId.value, job.id), 'Job closed.')
-  if (updated) {
-    selectedJob.value = updated
-    await refreshJobs()
-  }
-}
-
-async function createRubric() {
+async function publishJob() {
   if (!selectedJob.value) return
-  const version = await run(
-    () =>
-      api.createRubricVersion(actorId.value, selectedJob.value!.id, [
-        { criterion_id: 'teaching', name: 'Teaching evidence', category: 'teaching', weight: 40 },
-        { criterion_id: 'experience', name: 'Confirmed experience', category: 'experience', weight: 35 },
-        { criterion_id: 'skills', name: 'Preferred skills', category: 'skill', weight: 25 }
-      ]),
-    'Rubric version created.'
-  )
-  if (version) await refreshRubrics()
+  const job = await run(() => api.publishJob(selectedJob.value!.id), 'Job published.')
+  if (job) selectedJob.value = job
+}
+
+async function closeJob() {
+  if (!selectedJob.value) return
+  const job = await run(() => api.closeJob(selectedJob.value!.id), 'Job closed.')
+  if (job) selectedJob.value = job
+}
+
+async function openStaffJob(jobId: string) {
+  selectedJob.value = staffJobs.value.find((job) => job.id === jobId) ?? selectedJob.value
+  if (!selectedJob.value) return
+  Object.assign(jobForm, {
+    title: selectedJob.value.title,
+    designation: selectedJob.value.designation,
+    employment_type: selectedJob.value.employment_type,
+    vacancy_count: selectedJob.value.vacancy_count,
+    location: selectedJob.value.location,
+    description: selectedJob.value.description,
+    jd_document_ref: selectedJob.value.jd_document_ref ?? ''
+  })
+  const versions = await run(() => api.listRubricVersions(selectedJob.value!.id))
+  if (versions) rubricVersions.value = versions
 }
 
 async function uploadJdDocument(event: Event) {
   if (!selectedJob.value) return
-  jdFile.value = selectedFile(event)
+  const input = event.target as HTMLInputElement
+  jdFile.value = input.files?.[0] ?? null
   if (!jdFile.value) return
-  const updated = await run(
-    () => api.uploadJobJd(actorId.value, selectedJob.value!.id, jdFile.value!),
-    'JD document uploaded. Regenerate and approve the rubric before publishing.'
+  const job = await run(
+    () => api.uploadJobJd(selectedJob.value!.id, jdFile.value!),
+    'JD uploaded. Review and approve a rubric before publishing.'
   )
-  if (updated) {
-    selectedJob.value = updated
-    rubricVersions.value = []
-    await refreshJobs()
-  }
+  if (job) selectedJob.value = job
 }
 
 async function generateRubric() {
   if (!selectedJob.value) return
   const version = await run(
-    () => api.generateRubricVersion(actorId.value, selectedJob.value!.id),
-    'Rubric generated from the current JD document.'
+    () => api.generateRubricVersion(selectedJob.value!.id),
+    'Rubric proposal generated.'
   )
-  if (version) await refreshRubrics()
+  if (version) await openStaffJob(selectedJob.value.id)
 }
 
 async function approveRubric(version: RubricVersion) {
-  const approved = await run(
-    () => api.approveRubricVersion(actorId.value, version.id),
-    'Rubric version approved and frozen.'
+  const approved = await run(() => api.approveRubricVersion(version.id), 'Rubric approved and frozen.')
+  if (approved && selectedJob.value) await openStaffJob(selectedJob.value.id)
+}
+
+async function submitApplication() {
+  if (!selectedJob.value) return
+  if (!currentUser.value) {
+    navigate('login')
+    return
+  }
+  if (!resumeFile.value) {
+    errorMessage.value = 'Upload your resume before submitting the application.'
+    return
+  }
+  const document = await run(() => api.uploadResume(resumeFile.value!), 'Resume uploaded.')
+  if (!document) return
+  const application = await run(
+    () =>
+      api.apply(selectedJob.value!.id, {
+        candidate: {
+          user_id: currentUser.value!.id,
+          full_name: applyForm.full_name || currentUser.value!.full_name,
+          email: applyForm.email || currentUser.value!.email,
+          phone: applyForm.phone || null,
+          education_profile: {},
+          work_experience_profile: {},
+          resume_document_id: document.id
+        },
+        resume_document_id: document.id
+      }),
+    'Application received. Screening will start automatically.'
   )
-  if (approved) await refreshRubrics()
+  if (application) navigate('candidateApplications')
 }
 
-async function refreshRubrics() {
-  if (!selectedJob.value || !staffActor.value) return
-  const versions = await run(() => api.listRubricVersions(actorId.value, selectedJob.value!.id))
-  if (versions) rubricVersions.value = versions
-}
-
-async function refreshApplications() {
-  const params = new URLSearchParams()
-  if (applicationFilter.job_id) params.set('job_id', applicationFilter.job_id)
-  if (applicationFilter.stage) params.set('stage', applicationFilter.stage)
-  const data = await run(() => api.listApplications(actorId.value, params))
-  if (data) applications.value = data
-}
-
-async function startScreening(application: Application) {
-  const runResult = await run(() => api.startScreening(actorId.value, application.id), 'Screening queued.')
-  if (runResult) {
-    selectedApplication.value = { ...application, current_stage: 'SCREENING_PENDING' }
-    screeningRuns.value = [runResult]
-    page.value = 'candidateWorkspace'
-    await refreshApplications()
-    await openCandidateWorkspace(selectedApplication.value)
-  }
-}
-
-async function openCandidateWorkspace(application: Application) {
-  selectedApplication.value = application
-  page.value = 'candidateWorkspace'
-  const data = await run(() => api.screeningDossier(actorId.value, application.id))
-  if (data) {
-    dossier.value = data
-    screeningRuns.value = data.screening_runs
-  }
-}
-
-async function runScreeningWorkerOnce() {
-  const job = await run(() => api.runNextScreeningJob(actorId.value), 'Screening worker processed one job.')
-  if (job) {
-    screeningRuns.value = [job.screening_run, ...screeningRuns.value.filter((run) => run.id !== job.screening_run.id)]
-    if (selectedApplication.value) {
-      selectedApplication.value = { ...selectedApplication.value, current_stage: job.screening_run.run_status === 'COMPLETED' ? 'SCREENING_REVIEW' : selectedApplication.value.current_stage }
-      await openCandidateWorkspace(selectedApplication.value)
-    }
-    await refreshApplications()
-    await refreshDashboard()
-  }
-}
-
-async function retryLatestScreening() {
-  if (!latestScreening.value || latestScreening.value.run_status !== 'FAILED') return
-  const runResult = await run(
-    () => api.retryScreening(actorId.value, latestScreening.value!.id),
-    'Screening retry queued.'
-  )
-  if (runResult) {
-    screeningRuns.value = [runResult, ...screeningRuns.value]
-    await refreshApplications()
-  }
+async function openApplicationWorkspace(applicationId: string) {
+  selectedApplication.value = applications.value.find((row) => row.id === applicationId) ?? null
+  const data = await run(() => api.screeningDossier(applicationId))
+  if (data) dossier.value = data
 }
 
 async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress') {
   if (!selectedApplication.value) return
+  if (!remarks.value.trim()) {
+    errorMessage.value = 'Add remarks before recording this decision.'
+    return
+  }
   const updated = await run(
-    () => api.transition(actorId.value, selectedApplication.value!.id, action, remarks.value),
+    () => api.transition(selectedApplication.value!.id, action, remarks.value),
     'Decision recorded.'
   )
   if (updated) {
     selectedApplication.value = updated
     remarks.value = ''
-    await refreshApplications()
+    await openApplicationWorkspace(updated.id)
   }
 }
 
-async function applyToJob() {
-  if (!selectedJob.value) return
-  if (!resumeFile.value) {
-    message.value = 'Upload a resume file before submitting.'
-    return
-  }
-  let resumeDocumentId: string | null = null
-  const document = await run(() => api.uploadResume(actorId.value, resumeFile.value!), 'Resume uploaded.')
-  if (!document) return
-  resumeDocumentId = document.id
-  const application = await run(
-    () =>
-      api.apply(actorId.value, selectedJob.value!.id, {
-        candidate: {
-          user_id: actorId.value,
-          full_name: applyForm.full_name,
-          email: applyForm.email,
-          phone: applyForm.phone,
-          education_profile: { highest_degree: 'Synthetic degree' },
-          work_experience_profile: { summary: 'Synthetic experience' },
-          resume_document_ref: applyForm.resume_document_ref,
-          resume_document_id: resumeDocumentId
-        },
-        resume_document_ref: applyForm.resume_document_ref,
-        resume_document_id: resumeDocumentId
-      }),
-    'Application submitted.'
-  )
-  if (application) {
-    page.value = 'myApplications'
-    await refreshMine()
-  }
+async function retryLatestScreening() {
+  if (!latestScreening.value || latestScreening.value.run_status !== 'FAILED') return
+  const retry = await run(() => api.retryScreening(latestScreening.value!.id), 'Screening retry queued.')
+  if (retry && selectedApplication.value) await openApplicationWorkspace(selectedApplication.value.id)
 }
 
-async function refreshMine() {
-  const data = await run(() => api.myApplications(actorId.value))
-  if (data) myApplications.value = data
-}
-
-function selectJob(job: Job) {
+function openPublicJob(job: Job) {
   selectedJob.value = job
-  Object.assign(jobForm, {
-    title: job.title,
-    designation: job.designation,
-    employment_type: job.employment_type,
-    vacancy_count: job.vacancy_count,
-    location: job.location,
-    description: job.description,
-    jd_document_ref: job.jd_document_ref ?? ''
+  navigate('publicJobDetail', { jobId: job.id })
+}
+
+function openCandidateApply(job: Job) {
+  selectedJob.value = job
+  Object.assign(applyForm, {
+    full_name: currentUser.value?.full_name ?? '',
+    email: currentUser.value?.email ?? '',
+    phone: ''
   })
-  page.value = staffActor.value ? 'jobWorkspace' : 'candidateDetail'
-  if (staffActor.value) void refreshRubrics()
+  navigate(currentUser.value ? 'publicJobDetail' : 'login', { jobId: job.id })
+}
+
+function setResumeFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  resumeFile.value = input.files?.[0] ?? null
+}
+
+function stageLabel(stage: string | null | undefined) {
+  if (!stage) return 'Not started'
+  return stage
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return 'Not set'
+  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function percent(value: number | null | undefined) {
+  if (value === null || value === undefined) return 'Pending'
+  return `${Math.round(value * 100)}%`
 }
 
 onMounted(bootstrap)
 </script>
 
 <template>
-  <main class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark">HP</span>
-        <div>
-          <strong>Hiring Platform</strong>
-          <small>University recruitment</small>
-        </div>
-      </div>
-      <label class="field-label">Actor</label>
-      <select v-model="actorId" class="select" @change="refreshAll">
-        <option v-for="user in users" :key="user.id" :value="user.id">
-          {{ user.full_name }} · {{ user.roles.join(', ') }}
-        </option>
-      </select>
-      <nav class="nav">
-        <button
-          v-for="item in staffNav"
-          v-show="staffActor"
-          :key="item.key"
-          class="nav-item"
-          :class="{ active: page === item.key }"
-          @click="setPage(item.key)"
-        >
-          <component :is="item.icon" :size="17" />
-          {{ item.label }}
+  <main class="product-root">
+    <section v-if="route === 'publicHome' || route === 'publicJobs' || route === 'publicJobDetail' || route === 'login' || route === 'register'" class="public-shell">
+      <header class="public-nav">
+        <button class="brand-button" type="button" @click="navigate('publicHome')">
+          <span class="brand-mark">HP</span>
+          <span>
+            <strong>University Careers</strong>
+            <small>Hiring Platform</small>
+          </span>
         </button>
-        <button
-          v-for="item in candidateNav"
-          v-show="candidateActor"
-          :key="item.key"
-          class="nav-item"
-          :class="{ active: page === item.key }"
-          @click="setPage(item.key)"
-        >
-          <component :is="item.icon" :size="17" />
-          {{ item.label }}
-        </button>
-      </nav>
-    </aside>
-
-    <section class="workspace">
-      <header class="topbar">
-        <div>
-          <h1>{{ page.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase()) }}</h1>
-          <p v-if="currentActor">{{ currentActor.email }}</p>
-        </div>
-        <Button :loading="loading" @click="refreshAll">Refresh</Button>
+        <nav>
+          <Button variant="ghost" @click="navigate('publicJobs')">Open positions</Button>
+          <Button v-if="!currentUser" variant="subtle" @click="navigate('login')">Sign in</Button>
+          <Button v-else-if="isCandidate" variant="subtle" @click="navigate('candidateApplications')">My applications</Button>
+          <Button v-else variant="subtle" @click="navigate('staffDashboard')">Staff app</Button>
+        </nav>
       </header>
-      <p v-if="message" class="message">{{ message }}</p>
 
-      <section v-if="page === 'dashboard'" class="panel">
-        <div class="metric-grid">
-          <div class="metric"><span>{{ dashboard.open_jobs ?? 0 }}</span><p>Open Jobs</p></div>
-          <div class="metric"><span>{{ dashboard.applications_received ?? 0 }}</span><p>Applications Received</p></div>
-          <div class="metric"><span>{{ dashboard.screening_reviews_pending ?? 0 }}</span><p>Screening Reviews Pending</p></div>
-          <div class="metric"><span>{{ dashboard.shortlisted_for_assessment ?? 0 }}</span><p>Candidates Shortlisted</p></div>
-        </div>
-      </section>
-
-      <section v-if="page === 'jobs' || page === 'candidateJobs'" class="split">
-        <div class="panel">
-          <div class="toolbar">
-            <ListFilter :size="17" />
-            <TextInput v-model="jobFilter.search" placeholder="Search jobs" @keyup.enter="refreshJobs" />
-            <select v-if="staffActor" v-model="jobFilter.status" class="select" @change="refreshJobs">
-              <option value="">All statuses</option>
-              <option>DRAFT</option>
-              <option>PUBLISHED</option>
-              <option>CLOSED</option>
+      <section v-if="route === 'publicHome' || route === 'publicJobs'" class="careers-hero">
+        <div>
+          <p class="eyebrow">University recruitment</p>
+          <h1>Find your next opportunity</h1>
+          <p class="hero-copy">
+            Browse published faculty, academic operations and technology roles. Applications are reviewed by people,
+            with AI-assisted screening used only as decision support.
+          </p>
+          <div class="search-band">
+            <Search :size="18" />
+            <FormControl v-model="publicFilter.search" placeholder="Search jobs, departments or locations" @keyup.enter="loadPublicJobs" />
+            <Button @click="loadPublicJobs">Search</Button>
+          </div>
+          <div class="filter-row">
+            <select v-model="publicFilter.location" class="select-control">
+              <option value="">All locations</option>
+              <option v-for="location in [...new Set(publicJobs.map((job) => job.location))]" :key="location">{{ location }}</option>
+            </select>
+            <select v-model="publicFilter.employment_type" class="select-control">
+              <option value="">All employment types</option>
+              <option v-for="type in [...new Set(publicJobs.map((job) => job.employment_type))]" :key="type">{{ type }}</option>
             </select>
           </div>
-          <div class="list">
-            <button v-for="job in jobs" :key="job.id" class="list-row" @click="selectJob(job)">
-              <div>
-                <strong>{{ job.title }}</strong>
-                <small>{{ job.designation }} · {{ job.location }} · {{ job.vacancy_count }} vacancies</small>
-              </div>
-              <StatusBadge :value="job.status" />
-            </button>
+        </div>
+        <aside class="hero-panel">
+          <GraduationCap :size="28" />
+          <strong>{{ publicFilteredJobs.length }}</strong>
+          <span>published openings</span>
+        </aside>
+      </section>
+
+      <section v-if="route === 'publicHome' || route === 'publicJobs'" class="public-content">
+        <div class="section-heading">
+          <div>
+            <h2>Open positions</h2>
+            <p>Only published jobs are listed here.</p>
           </div>
         </div>
-        <form v-if="staffActor" class="panel form" @submit.prevent="createJob">
-          <h2>Create Job</h2>
-          <TextInput v-model="jobForm.title" placeholder="Title" />
-          <TextInput v-model="jobForm.designation" placeholder="Designation" />
-          <TextInput v-model="jobForm.employment_type" placeholder="Employment type" />
-          <TextInput v-model="jobForm.location" placeholder="Location" />
-          <TextInput v-model="jobForm.jd_document_ref" placeholder="JD document reference" />
-          <Textarea v-model="jobForm.description" placeholder="Description" />
-          <Button type="submit">Create</Button>
+        <div v-if="loading" class="skeleton-list">
+          <div v-for="item in 3" :key="item" class="skeleton-row" />
+        </div>
+        <div v-else-if="publicFilteredJobs.length" class="job-list">
+          <article v-for="job in publicFilteredJobs" :key="job.id" class="job-row">
+            <div>
+              <h3>{{ job.title }}</h3>
+              <p>{{ job.designation }} · {{ job.location }} · {{ job.employment_type }}</p>
+            </div>
+            <div class="row-actions">
+              <Badge>{{ job.vacancy_count }} opening{{ job.vacancy_count === 1 ? '' : 's' }}</Badge>
+              <Button @click="openPublicJob(job)">View opening</Button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="empty-state">No open positions match your filters.</p>
+      </section>
+
+      <section v-if="route === 'publicJobDetail' && selectedJob" class="job-detail public-content">
+        <button class="back-link" type="button" @click="navigate('publicJobs')">Back to jobs</button>
+        <div class="detail-hero">
+          <div>
+            <p class="eyebrow">Published opening</p>
+            <h1>{{ selectedJob.title }}</h1>
+            <p>{{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}</p>
+          </div>
+          <Button @click="openCandidateApply(selectedJob)">Apply now</Button>
+        </div>
+        <div class="detail-grid">
+          <article>
+            <h2>About the role</h2>
+            <p>{{ selectedJob.description }}</p>
+          </article>
+          <aside>
+            <span>Vacancies</span>
+            <strong>{{ selectedJob.vacancy_count }}</strong>
+            <span>Application window</span>
+            <strong>{{ formatDate(selectedJob.application_start) }} - {{ formatDate(selectedJob.application_end) }}</strong>
+          </aside>
+        </div>
+        <form v-if="currentUser && isCandidate" class="application-form" @submit.prevent="submitApplication">
+          <h2>Apply for {{ selectedJob.title }}</h2>
+          <FormControl v-model="applyForm.full_name" label="Full name" required />
+          <FormControl v-model="applyForm.email" label="Email" type="email" required />
+          <FormControl v-model="applyForm.phone" label="Phone" />
+          <label class="upload-field">
+            <span>Resume</span>
+            <input type="file" accept=".pdf,.docx,.json" @change="setResumeFile">
+          </label>
+          <Button type="submit" :loading="loading">Submit application</Button>
         </form>
       </section>
 
-      <section v-if="page === 'jobWorkspace' && selectedJob" class="panel">
-        <div class="detail-head">
+      <section v-if="route === 'login'" class="auth-panel">
+        <h1>Sign in</h1>
+        <p>Use your candidate or university staff account.</p>
+        <form @submit.prevent="login">
+          <FormControl v-model="loginForm.email" label="Email" type="email" required />
+          <FormControl v-model="loginForm.password" label="Password" type="password" required />
+          <Button type="submit" :loading="loading">Sign in</Button>
+        </form>
+        <button class="back-link" type="button" @click="navigate('register')">Create a candidate account</button>
+      </section>
+
+      <section v-if="route === 'register'" class="auth-panel">
+        <h1>Create candidate account</h1>
+        <p>Staff accounts are provisioned by university administrators.</p>
+        <form @submit.prevent="register">
+          <FormControl v-model="registerForm.full_name" label="Full name" required />
+          <FormControl v-model="registerForm.email" label="Email" type="email" required />
+          <FormControl v-model="registerForm.password" label="Password" type="password" required />
+          <Button type="submit" :loading="loading">Create account</Button>
+        </form>
+      </section>
+    </section>
+
+    <section v-else-if="isCandidate" class="app-shell">
+      <aside class="sidebar candidate-sidebar">
+        <div class="brand">
+          <span class="brand-mark">HP</span>
           <div>
-            <h2>{{ selectedJob.title }}</h2>
-            <p>{{ selectedJob.designation }} · {{ selectedJob.employment_type }} · {{ selectedJob.location }}</p>
+            <strong>Candidate Portal</strong>
+            <small>{{ currentUser?.full_name }}</small>
           </div>
-          <StatusBadge :value="selectedJob.status" />
         </div>
-        <div class="form-grid">
-          <TextInput v-model="jobForm.title" placeholder="Title" />
-          <TextInput v-model="jobForm.location" placeholder="Location" />
-          <TextInput v-model="jobForm.jd_document_ref" placeholder="JD document reference" />
-          <Textarea v-model="jobForm.description" placeholder="Description" />
-        </div>
-        <div class="document-strip">
-          <div>
-            <strong>JD Document</strong>
-            <small v-if="selectedJob.jd_document">
-              {{ selectedJob.jd_document.original_filename }} · {{ selectedJob.jd_document.sha256.slice(0, 12) }}
-            </small>
-            <small v-else>{{ selectedJob.jd_document_ref || 'No stored JD document yet' }}</small>
+        <nav class="nav-list">
+          <button v-for="item in candidateNav" :key="item.route" class="nav-item" :class="{ active: route === item.route }" type="button" @click="navigate(item.route)">
+            <component :is="item.icon" :size="17" />
+            {{ item.label }}
+          </button>
+        </nav>
+        <Button variant="ghost" @click="logout"><LogOut :size="16" /> Sign out</Button>
+      </aside>
+      <section class="workspace">
+        <section v-if="route === 'candidateJobs'" class="page-section">
+          <div class="page-header">
+            <div><h1>Jobs</h1><p>Published openings accepting applications.</p></div>
           </div>
-          <label class="file-button">
-            <Upload :size="16" />
-            Upload JD
-            <input type="file" accept=".pdf,.docx,.txt,.md" @change="uploadJdDocument">
-          </label>
-        </div>
-        <div class="actions">
-          <Button :disabled="selectedJob.status !== 'DRAFT'" @click="saveDraft">Save Draft</Button>
-          <Button :disabled="selectedJob.status !== 'DRAFT'" @click="publishJob(selectedJob)">Publish</Button>
-          <Button :disabled="selectedJob.status !== 'PUBLISHED'" @click="closeJob(selectedJob)">Close</Button>
-          <Button @click="generateRubric">Generate Rubric</Button>
-          <Button @click="createRubric">Manual Version</Button>
-        </div>
-        <section class="rubric-section">
-          <div class="detail-head">
-            <div>
-              <h2>Rubric Versions</h2>
-              <p v-if="approvedRubric">Current approved: v{{ approvedRubric.version_number }}</p>
-              <p v-else>No approved rubric is current for this job.</p>
-            </div>
+          <div class="job-list">
+            <article v-for="job in publicFilteredJobs" :key="job.id" class="job-row">
+              <div><h3>{{ job.title }}</h3><p>{{ job.designation }} · {{ job.location }}</p></div>
+              <Button @click="openPublicJob(job)">View and apply</Button>
+            </article>
           </div>
-          <div v-if="rubricVersions.length" class="list">
-            <div v-for="version in rubricVersions" :key="version.id" class="list-row">
+        </section>
+        <section v-if="route === 'candidateApplications'" class="page-section">
+          <div class="page-header"><div><h1>My applications</h1><p>Candidate-safe status only.</p></div></div>
+          <div v-if="myApplications.length" class="application-cards">
+            <article v-for="application in myApplications" :key="application.id" class="application-card">
               <div>
-                <strong>Version {{ version.version_number }}</strong>
-                <small>
-                  {{ version.status }} · {{ version.source_structured_jd_schema_version || 'no schema' }} ·
-                  {{ version.source_jd_sha256 ? version.source_jd_sha256.slice(0, 12) : 'no JD hash' }}
-                </small>
+                <h3>{{ application.job_title }}</h3>
+                <p>Applied {{ formatDate(application.submitted_at) }}</p>
               </div>
-              <div class="row-actions">
-                <Badge>{{ version.criteria.length }} criteria</Badge>
-                <Button
-                  v-if="version.status !== 'APPROVED' && version.status !== 'SUPERSEDED'"
-                  @click="approveRubric(version)"
-                >
-                  Approve
-                </Button>
-              </div>
-            </div>
+              <StatusBadge :value="application.status_label" />
+              <ol class="candidate-steps">
+                <li class="done">Submitted</li>
+                <li :class="{ done: application.status_label !== 'Application Received' }">Screening</li>
+                <li>Department review</li>
+                <li :class="{ done: application.status_label === 'Assessment' }">Assessment</li>
+                <li>Interview</li>
+                <li>Decision</li>
+              </ol>
+            </article>
           </div>
-          <p v-else class="empty-copy">Generate or add a rubric version before publishing.</p>
+          <p v-else class="empty-state">No applications yet.</p>
+        </section>
+        <section v-if="route === 'candidateAssessments'" class="page-section">
+          <div class="page-header"><div><h1>Assessments</h1><p>Assessment invitations will appear here.</p></div></div>
+          <p class="empty-state">No assessment has been assigned yet.</p>
+        </section>
+        <section v-if="route === 'candidateInterviews'" class="page-section">
+          <div class="page-header"><div><h1>Interviews</h1><p>Scheduled interviews will appear here.</p></div></div>
+          <p class="empty-state">No interview is scheduled yet.</p>
+        </section>
+        <section v-if="route === 'candidateProfile'" class="page-section">
+          <div class="page-header"><div><h1>Profile</h1><p>{{ currentUser?.email }}</p></div></div>
+          <p class="empty-state">Profile editing will be added after the core hiring workflow is complete.</p>
         </section>
       </section>
+    </section>
 
-      <section v-if="page === 'candidateDetail' && selectedJob" class="panel">
-        <div class="detail-head">
+    <section v-else-if="isStaff" class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">HP</span>
           <div>
-            <h2>{{ selectedJob.title }}</h2>
-            <p>{{ selectedJob.designation }} · {{ selectedJob.location }}</p>
-          </div>
-          <Button @click="page = 'candidateApply'">Apply</Button>
-        </div>
-        <p class="description">{{ selectedJob.description }}</p>
-      </section>
-
-      <section v-if="page === 'candidateApply' && selectedJob" class="panel form">
-        <h2>Apply: {{ selectedJob.title }}</h2>
-        <TextInput v-model="applyForm.full_name" placeholder="Full name" />
-        <TextInput v-model="applyForm.email" placeholder="Email" />
-        <TextInput v-model="applyForm.phone" placeholder="Phone" />
-        <TextInput v-model="applyForm.resume_document_ref" placeholder="Resume document reference" />
-        <label class="upload-field">
-          <span>Resume file</span>
-          <input type="file" accept=".pdf,.json" @change="setResumeFile">
-        </label>
-        <small class="helper-copy">Supported locally: PDF for the real provider or JSON for synthetic structured profiles.</small>
-        <Button @click="applyToJob">Submit Application</Button>
-      </section>
-
-      <section v-if="page === 'myApplications'" class="panel">
-        <div class="list">
-          <div v-for="application in myApplications" :key="application.id" class="list-row">
-            <div>
-              <strong>{{ application.job_title }}</strong>
-              <small>
-                {{ new Date(application.submitted_at).toLocaleString() }}
-                <span v-if="application.resume_filename"> · {{ application.resume_filename }}</span>
-              </small>
-            </div>
-            <StatusBadge :value="application.status_label" />
+            <strong>Hiring Platform</strong>
+            <small>University recruitment</small>
           </div>
         </div>
-      </section>
-
-      <section v-if="page === 'applications'" class="panel">
-        <div class="toolbar">
-          <select v-model="applicationFilter.job_id" class="select" @change="refreshApplications">
-            <option value="">All jobs</option>
-            <option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.title }}</option>
-          </select>
-          <select v-model="applicationFilter.stage" class="select" @change="refreshApplications">
-            <option value="">All stages</option>
-            <option v-for="stage in applicationStages" :key="stage">
-              {{ stage }}
-            </option>
-          </select>
-          <Button @click="runScreeningWorkerOnce">
-            <RotateCcw :size="16" />
-            Run Worker Once
-          </Button>
+        <p class="sidebar-label">Recruitment</p>
+        <nav class="nav-list">
+          <button v-for="item in staffNav" :key="item.route" class="nav-item" :class="{ active: route === item.route }" type="button" @click="navigate(item.route)">
+            <component :is="item.icon" :size="17" />
+            <span>{{ item.label }}</span>
+            <Badge v-if="item.count !== null">{{ item.count }}</Badge>
+          </button>
+        </nav>
+        <div class="user-strip">
+          <strong>{{ currentUser?.full_name }}</strong>
+          <small>{{ currentUser?.roles.map(stageLabel).join(', ') }}</small>
+          <Button variant="ghost" @click="logout"><LogOut :size="16" /> Sign out</Button>
         </div>
-        <div class="list">
-          <div
-            v-for="application in applications"
-            :key="application.id"
-            class="list-row list-row--clickable"
-            @click="openCandidateWorkspace(application)"
-          >
-            <div>
-              <strong>{{ application.id.slice(0, 8) }}</strong>
-              <small>{{ application.job_id.slice(0, 8) }} · {{ new Date(application.submitted_at).toLocaleString() }}</small>
+      </aside>
+
+      <section class="workspace">
+        <div v-if="message" class="notice success">{{ message }}</div>
+        <div v-if="errorMessage" class="notice error">{{ errorMessage }}</div>
+
+        <section v-if="route === 'staffDashboard'" class="page-section">
+          <div class="page-header"><div><h1>Recruitment dashboard</h1><p>Operational work requiring staff attention.</p></div></div>
+          <div class="metric-grid">
+            <div class="metric"><span>{{ dashboard.open_jobs ?? 0 }}</span><p>Open jobs</p></div>
+            <div class="metric"><span>{{ dashboard.applications_received ?? 0 }}</span><p>Applications received</p></div>
+            <div class="metric"><span>{{ dashboard.screening_reviews_pending ?? 0 }}</span><p>Screening reviews pending</p></div>
+            <div class="metric"><span>{{ dashboard.shortlisted_for_assessment ?? 0 }}</span><p>Shortlisted for assessment</p></div>
+          </div>
+          <div class="pipeline-band">
+            <span>Applied</span><span>Screening</span><span>Review</span><span>Assessment</span><span>Interview</span><span>Decision</span>
+          </div>
+        </section>
+
+        <section v-if="route === 'staffJobs'" class="page-section">
+          <div class="page-header">
+            <div><h1>Jobs</h1><p>Manage drafts, published openings and closed roles.</p></div>
+            <Button @click="showJobEditor = !showJobEditor">New job</Button>
+          </div>
+          <div class="toolbar">
+            <FormControl v-model="staffJobFilter.search" placeholder="Search jobs" @keyup.enter="loadStaffJobs" />
+            <select v-model="staffJobFilter.status" class="select-control" @change="loadStaffJobs">
+              <option value="">All statuses</option><option>DRAFT</option><option>PUBLISHED</option><option>CLOSED</option>
+            </select>
+          </div>
+          <form v-if="showJobEditor" class="editor-panel" @submit.prevent="createJob">
+            <FormControl v-model="jobForm.title" label="Job title" required />
+            <FormControl v-model="jobForm.designation" label="Designation" required />
+            <FormControl v-model="jobForm.employment_type" label="Employment type" required />
+            <FormControl v-model.number="jobForm.vacancy_count" label="Vacancies" type="number" required />
+            <FormControl v-model="jobForm.location" label="Location" required />
+            <FormControl v-model="jobForm.jd_document_ref" label="JD reference" />
+            <Textarea v-model="jobForm.description" label="Description" />
+            <Button type="submit">Create draft</Button>
+          </form>
+          <div class="data-table">
+            <button v-for="job in staffJobs" :key="job.id" class="table-row" type="button" @click="navigate('staffJobWorkspace', { jobId: job.id })">
+              <span><strong>{{ job.title }}</strong><small>{{ job.designation }}</small></span>
+              <span>{{ job.location }}</span>
+              <span>{{ job.vacancy_count }}</span>
+              <StatusBadge :value="job.status" />
+              <span>{{ formatDate(job.updated_at) }}</span>
+            </button>
+          </div>
+        </section>
+
+        <section v-if="route === 'staffJobWorkspace' && selectedJob" class="page-section">
+          <button class="back-link" type="button" @click="navigate('staffJobs')">Back to jobs</button>
+          <div class="page-header">
+            <div><h1>{{ selectedJob.title }}</h1><p>{{ selectedJob.designation }} · {{ selectedJob.location }} · {{ selectedJob.employment_type }}</p></div>
+            <StatusBadge :value="selectedJob.status" />
+          </div>
+          <div class="tab-row">
+            <button v-for="tab in ['overview', 'rubric', 'applications', 'activity']" :key="tab" type="button" :class="{ active: activeJobTab === tab }" @click="activeJobTab = tab as typeof activeJobTab">{{ stageLabel(tab) }}</button>
+          </div>
+          <section v-if="activeJobTab === 'overview'" class="editor-panel">
+            <FormControl v-model="jobForm.title" label="Job title" required />
+            <FormControl v-model="jobForm.location" label="Location" required />
+            <FormControl v-model="jobForm.employment_type" label="Employment type" required />
+            <Textarea v-model="jobForm.description" label="Description" />
+            <div class="action-row">
+              <Button :disabled="selectedJob.status !== 'DRAFT'" @click="saveDraft">Save draft</Button>
+              <Button :disabled="selectedJob.status !== 'DRAFT' || !approvedRubric" @click="publishJob">Publish</Button>
+              <Button :disabled="selectedJob.status !== 'PUBLISHED'" theme="red" @click="closeJob">Close job</Button>
             </div>
-            <div class="row-actions">
+          </section>
+          <section v-if="activeJobTab === 'rubric'" class="workspace-grid">
+            <div class="panel">
+              <h2>Job description</h2>
+              <p v-if="selectedJob.jd_document">{{ selectedJob.jd_document.original_filename }}</p>
+              <p v-else>{{ selectedJob.jd_document_ref || 'No JD document uploaded yet.' }}</p>
+              <label class="upload-field"><span>Replace JD</span><input type="file" accept=".pdf,.docx,.txt,.md" @change="uploadJdDocument"></label>
+              <Button @click="generateRubric">Generate rubric</Button>
+            </div>
+            <div class="panel">
+              <h2>Screening rubric</h2>
+              <p v-if="approvedRubric">Current approved rubric: v{{ approvedRubric.version_number }}</p>
+              <p v-else class="empty-state">No approved rubric. Publishing is blocked until a rubric is approved.</p>
+              <div v-for="version in rubricVersions" :key="version.id" class="rubric-row">
+                <div><strong>Version {{ version.version_number }}</strong><small>{{ version.status }} · {{ version.criteria.length }} criteria</small></div>
+                <Button v-if="version.status !== 'APPROVED' && version.status !== 'SUPERSEDED'" @click="approveRubric(version)">Approve rubric</Button>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section v-if="route === 'staffApplications' || route === 'staffScreeningReview'" class="page-section">
+          <div class="page-header"><div><h1>{{ route === 'staffScreeningReview' ? 'Screening review' : 'Applications' }}</h1><p>Candidate pipeline with screening state.</p></div></div>
+          <div class="toolbar">
+            <FormControl v-model="applicationFilter.search" placeholder="Search candidates or jobs" />
+            <select v-model="applicationFilter.job_id" class="select-control" @change="loadApplications"><option value="">All jobs</option><option v-for="job in staffJobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
+            <select v-model="applicationFilter.stage" class="select-control" @change="loadApplications"><option value="">All stages</option><option v-for="stage in applicationStages" :key="stage" :value="stage">{{ stageLabel(stage) }}</option></select>
+          </div>
+          <div class="application-table">
+            <button v-for="application in staffFilteredApplications" :key="application.id" class="application-row" type="button" @click="navigate('staffApplicationWorkspace', { applicationId: application.id })">
+              <span><strong>{{ application.candidate?.full_name ?? 'Candidate' }}</strong><small>{{ application.candidate?.email }}</small></span>
+              <span>{{ application.job_title }}</span>
+              <span>{{ formatDate(application.submitted_at) }}</span>
+              <span>{{ application.screening_status ? stageLabel(application.screening_status) : 'Queued' }}</span>
+              <span>{{ application.screening_score ?? 'Pending' }}</span>
               <StatusBadge :value="application.current_stage" />
-              <Button
-                v-if="application.current_stage === 'SCREENING_PENDING'"
-                @click.stop="startScreening(application)"
-              >
-                Queue Screening
-              </Button>
-            </div>
+            </button>
           </div>
-        </div>
-      </section>
+          <p v-if="!staffFilteredApplications.length" class="empty-state">No applications match your filters.</p>
+        </section>
 
-      <section v-if="page === 'candidateWorkspace' && selectedApplication" class="workspace-grid">
-        <div class="panel">
-          <h2>Overview</h2>
-          <p>Application {{ selectedApplication.id }}</p>
-          <StatusBadge :value="selectedApplication.current_stage" />
-          <div class="summary-grid">
-            <div>
-              <span>Job</span>
-              <strong>{{ selectedApplication.job_id.slice(0, 8) }}</strong>
-            </div>
-            <div>
-              <span>Submitted</span>
-              <strong>{{ new Date(selectedApplication.submitted_at).toLocaleDateString() }}</strong>
-            </div>
+        <section v-if="route === 'staffApplicationWorkspace' && selectedApplication" class="page-section">
+          <button class="back-link" type="button" @click="navigate('staffApplications')">Back to applications</button>
+          <div class="page-header">
+            <div><h1>{{ selectedApplication.candidate?.full_name ?? 'Candidate' }}</h1><p>{{ selectedApplication.job_title }} · applied {{ formatDate(selectedApplication.submitted_at) }}</p></div>
+            <StatusBadge :value="selectedApplication.current_stage" />
           </div>
-          <h2>Decision History</h2>
-          <div v-if="dossier?.decisions.length" class="history-list">
-            <div v-for="decision in dossier.decisions" :key="decision.id">
-              <strong>{{ decision.decision }}</strong>
-              <small>{{ new Date(decision.timestamp).toLocaleString() }} · {{ decision.remarks }}</small>
+          <div class="tab-row">
+            <button v-for="tab in ['overview', 'screening', 'assessment', 'interview', 'history']" :key="tab" type="button" :class="{ active: activeApplicationTab === tab }" @click="activeApplicationTab = tab as typeof activeApplicationTab">{{ stageLabel(tab) }}</button>
+          </div>
+          <section v-if="activeApplicationTab === 'overview'" class="workspace-grid">
+            <div class="panel"><h2>Candidate</h2><p>{{ selectedApplication.candidate?.email }}</p><p>{{ selectedApplication.candidate?.phone || 'No phone recorded' }}</p></div>
+            <div class="panel"><h2>Progress summary</h2><p>Screening: {{ latestScreening ? stageLabel(latestScreening.run_status) : 'Queued' }}</p><p>Assessment: Not assigned</p><p>Intro video: Not requested</p><p>Interview: Not scheduled</p><p>Final: Undecided</p></div>
+          </section>
+          <section v-if="activeApplicationTab === 'screening'" class="workspace-grid">
+            <div class="panel screening-card">
+              <h2>Screening summary</h2>
+              <template v-if="latestScreening">
+                <StatusBadge :value="latestScreening.run_status" />
+                <strong>{{ latestScreening.score ?? 'Pending' }} / {{ latestScreening.maximum_score ?? 100 }}</strong>
+                <p>Eligibility: {{ latestScreening.eligibility ?? 'Pending' }}</p>
+                <p>Evidence completeness: {{ percent(latestScreening.evidence_completeness) }}</p>
+                <p>Confirmed experience: {{ latestScreening.confirmed_experience_months ?? 0 }} months</p>
+                <p v-if="latestScreening.failure_message" class="failure-copy">Screening needs technical review. {{ latestScreening.failure_message }}</p>
+                <Button v-if="latestScreening.run_status === 'FAILED'" @click="retryLatestScreening">Retry technical screening</Button>
+              </template>
+              <p v-else class="empty-state">Screening has been queued and will appear here when processed.</p>
             </div>
-          </div>
-          <p v-else class="empty-copy">No human screening decision has been recorded.</p>
-          <Textarea v-model="remarks" placeholder="Required remarks" />
-          <div class="actions">
-            <Button @click="screeningDecision('shortlist')">Shortlist For Assessment</Button>
-            <Button @click="screeningDecision('hold')">Hold</Button>
-            <Button @click="screeningDecision('do-not-progress')">Do Not Progress</Button>
-          </div>
-          <h2>Stage History</h2>
-          <div v-if="dossier?.stage_history.length" class="history-list">
-            <div v-for="item in dossier.stage_history" :key="item.id">
-              <strong>{{ item.previous_stage || 'START' }} → {{ item.new_stage }}</strong>
-              <small>{{ new Date(item.timestamp).toLocaleString() }} · {{ item.remarks || 'system transition' }}</small>
+            <div class="panel">
+              <h2>Human review</h2>
+              <Textarea v-model="remarks" label="Decision remarks" />
+              <div class="action-row">
+                <Button @click="screeningDecision('shortlist')">Shortlist for assessment</Button>
+                <Button @click="screeningDecision('hold')">Hold</Button>
+                <Button theme="red" @click="screeningDecision('do-not-progress')">Do not progress</Button>
+              </div>
             </div>
-          </div>
-        </div>
-        <div class="panel">
-          <h2>AI Screening</h2>
-          <div v-if="latestScreening" class="screening-summary">
-            <Badge>{{ latestScreening.provider }}</Badge>
-            <StatusBadge :value="latestScreening.run_status" />
-            <strong>{{ latestScreening.score ?? 'Queued' }} / {{ latestScreening.maximum_score ?? 100 }}</strong>
-            <span>Eligibility: {{ latestScreening.eligibility ?? 'Pending' }}</span>
-            <span>Evidence completeness: {{ latestScreening.evidence_completeness ?? 'Pending' }}</span>
-            <span>Confirmed experience: {{ latestScreening.confirmed_experience_months ?? 0 }} months</span>
-            <span v-if="latestScreening.engine_contract_version">
-              Contract: {{ latestScreening.engine_contract_version }}
-            </span>
-            <span v-if="latestScreening.jd_document_sha256">
-              JD SHA-256: {{ latestScreening.jd_document_sha256.slice(0, 12) }}
-            </span>
-            <span v-if="latestScreening.resume_document_sha256">
-              Resume SHA-256: {{ latestScreening.resume_document_sha256.slice(0, 12) }}
-            </span>
-            <span v-if="latestScreening.model_endpoint_slot">
-              Endpoint slot: {{ latestScreening.model_endpoint_slot }}
-            </span>
-            <span v-if="latestScreening.failure_message" class="failure-copy">
-              {{ latestScreening.failure_code }}: {{ latestScreening.failure_message }}
-            </span>
-            <Button v-if="latestScreening.run_status === 'FAILED'" @click="retryLatestScreening">Retry Screening</Button>
-            <div v-if="latestScreening.warnings.length" class="warning-list">
-              <span v-for="warning in latestScreening.warnings" :key="warning">{{ warning }}</span>
+            <div class="panel wide-panel">
+              <h2>Criteria and evidence</h2>
+              <article v-for="criterion in latestScreening?.criterion_results ?? []" :key="criterion.id" class="criterion-row">
+                <div><strong>{{ criterion.criterion_name }}</strong><p>{{ criterion.explanation }}</p></div>
+                <StatusBadge :value="criterion.status" />
+                <details v-for="evidence in criterion.evidence" :key="evidence.id">
+                  <summary>{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary>
+                  <p>{{ evidence.exact_text }}</p>
+                  <small>Page {{ evidence.page_number ?? 'n/a' }}</small>
+                </details>
+              </article>
+              <p v-if="!latestScreening?.criterion_results.length" class="empty-state">Screening evidence is not available yet.</p>
             </div>
-          </div>
-          <div v-for="criterion in latestScreening?.criterion_results ?? []" :key="criterion.id" class="criterion">
-            <div class="detail-head">
-              <strong>{{ criterion.criterion_name }}</strong>
-              <StatusBadge :value="criterion.status" />
-            </div>
-            <p>{{ criterion.explanation }}</p>
-            <small>
-              Weight {{ criterion.weight ?? 0 }} · score {{ criterion.weighted_score }} · matched
-              {{ criterion.matched_terms.join(', ') || 'none' }}
-            </small>
-            <p v-if="criterion.missing_information.length" class="warning-list">
-              Missing: {{ criterion.missing_information.join(', ') }}
-            </p>
-            <details v-for="evidence in criterion.evidence" :key="evidence.id">
-              <summary>{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary>
-              <p>{{ evidence.exact_text }}</p>
-              <small>{{ evidence.source_document_id }} · page {{ evidence.page_number ?? 'n/a' }}</small>
-            </details>
-          </div>
-          <p v-if="!latestScreening">No screening run yet.</p>
-        </div>
+          </section>
+          <section v-if="activeApplicationTab === 'assessment'" class="panel"><h2>Assessment</h2><p class="empty-state">No assessment assignment has been created for this application.</p></section>
+          <section v-if="activeApplicationTab === 'interview'" class="panel"><h2>Interview</h2><p class="empty-state">No interview is scheduled for this candidate.</p><p>Intro video: Not requested</p></section>
+          <section v-if="activeApplicationTab === 'history'" class="panel">
+            <h2>Decision history</h2>
+            <div v-for="item in dossier?.stage_history ?? []" :key="item.id" class="history-row"><strong>{{ stageLabel(item.previous_stage || 'Start') }} to {{ stageLabel(item.new_stage) }}</strong><small>{{ formatDate(item.timestamp) }} · {{ item.remarks || 'System transition' }}</small></div>
+          </section>
+        </section>
+
+        <section v-if="route === 'staffAssessments'" class="page-section"><div class="page-header"><div><h1>Assessments</h1><p>Assignments and review queues.</p></div></div><p class="empty-state">No assessment assignments are available yet.</p></section>
+        <section v-if="route === 'staffInterviews'" class="page-section"><div class="page-header"><div><h1>Interviews</h1><p>Upcoming interviews, completed interviews and feedback pending.</p></div></div><p class="empty-state">No interview rounds are scheduled yet.</p></section>
+        <section v-if="route === 'staffFinalDecisions'" class="page-section"><div class="page-header"><div><h1>Final decisions</h1><p>Human final decisions and audit trail.</p></div></div><p class="empty-state">No final decision records are pending.</p></section>
       </section>
     </section>
   </main>

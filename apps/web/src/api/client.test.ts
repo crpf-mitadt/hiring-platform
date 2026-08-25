@@ -11,19 +11,19 @@ describe('api client screening integration routes', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.uploadResume('actor-1', new File(['{}'], 'resume.json', { type: 'application/json' }))
+    await api.uploadResume(new File(['{}'], 'resume.json', { type: 'application/json' }))
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/documents/resumes',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'X-Actor-Id': 'actor-1' },
+        credentials: 'include',
         body: expect.any(FormData)
       })
     )
   })
 
-  it('uses queued screening and worker routes', async () => {
+  it('uses session-backed screening review routes without worker UI routes', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ id: 'run-1' }),
@@ -31,30 +31,20 @@ describe('api client screening integration routes', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.startScreening('actor-1', 'application-1')
-    await api.runNextScreeningJob('actor-1')
-    await api.retryScreening('actor-1', 'run-1')
-    await api.screeningDossier('actor-1', 'application-1')
+    await api.retryScreening('run-1')
+    await api.screeningDossier('application-1')
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/applications/application-1/screening-runs',
-      expect.objectContaining({ method: 'POST' })
-    )
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/screening-jobs/run-next',
-      expect.objectContaining({ method: 'POST' })
-    )
-    expect(fetchMock).toHaveBeenCalledWith(
       '/api/applications/screening-runs/run-1/retry',
-      expect.objectContaining({ method: 'POST' })
+      expect.objectContaining({ method: 'POST', credentials: 'include' })
     )
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/applications/application-1/screening-dossier',
-      expect.objectContaining({ method: 'GET' })
+      expect.objectContaining({ method: 'GET', credentials: 'include' })
     )
   })
 
-  it('sends actor headers for staff job lists', async () => {
+  it('uses relative session-backed urls for staff job lists', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => [],
@@ -62,13 +52,13 @@ describe('api client screening integration routes', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.listJobs('actor-1', new URLSearchParams({ status: 'DRAFT' }))
+    await api.listJobs(new URLSearchParams({ status: 'DRAFT' }))
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/jobs?status=DRAFT',
       expect.objectContaining({
         method: 'GET',
-        headers: expect.objectContaining({ 'X-Actor-Id': 'actor-1' })
+        credentials: 'include'
       })
     )
   })
