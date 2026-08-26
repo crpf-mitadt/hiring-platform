@@ -6,6 +6,7 @@ import signal
 import threading
 
 from app.db.session import SessionLocal
+from app.services.bulk_screening import process_next_bulk_screening_jobs
 from app.services.screening import process_next_screening_job
 
 logger = logging.getLogger(__name__)
@@ -24,12 +25,15 @@ def run_pending_screening_jobs(
     current_sleep = poll_interval_seconds
     while True:
         job = None
+        bulk_processed = 0
         if stop_event is not None and stop_event.is_set():
             break
         try:
             with SessionLocal() as db:
                 job = process_next_screening_job(db)
                 if job is None:
+                    bulk_processed = process_next_bulk_screening_jobs(db)
+                if job is None and bulk_processed == 0:
                     db.commit()
                     if once:
                         break
@@ -37,7 +41,7 @@ def run_pending_screening_jobs(
                     if max_idle_cycles is not None and idle_cycles >= max_idle_cycles:
                         break
                 else:
-                    processed += 1
+                    processed += (1 if job is not None else 0) + bulk_processed
                     idle_cycles = 0
                     current_sleep = poll_interval_seconds
                     db.commit()
@@ -47,7 +51,7 @@ def run_pending_screening_jobs(
 
         if once:
             break
-        if job is None or idle_cycles:
+        if (job is None and bulk_processed == 0) or idle_cycles:
             if stop_event is not None and stop_event.wait(current_sleep):
                 break
             if max_idle_cycles is not None and idle_cycles >= max_idle_cycles:

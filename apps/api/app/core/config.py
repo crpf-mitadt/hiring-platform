@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     screening_chandra_ocr_retry_max_tokens: int = 8192
     screening_pipeline_debug_raw_responses: bool = False
     vite_api_proxy_target: str = "http://localhost:8010"
+    bulk_screening_max_zip_bytes: int = 25 * 1024 * 1024
+    bulk_screening_max_zip_files: int = 250
+    bulk_screening_max_zip_uncompressed_bytes: int = 50 * 1024 * 1024
+    bulk_screening_worker_batch_size: int = 1
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="HIRING_")
 

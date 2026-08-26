@@ -16,6 +16,17 @@ Application
   -> SCREENING_REVIEW
 ```
 
+Bulk Screening uses the same worker process:
+
+```text
+BulkScreeningBatch
+  -> BulkScreeningItem
+  -> BulkScreeningWorkItem
+  -> worker claims pending bulk item
+  -> BulkScreeningProvider
+  -> BulkScreeningItem + CriterionResult + Evidence
+```
+
 ## Implemented Boundary
 
 - Candidate application submission automatically queues a `ScreeningRun` and `ScreeningJob` after the application and
@@ -27,8 +38,10 @@ Application
 - `PYTHONPATH=apps/api .venv/bin/python -m app.worker --once` provides a command-line worker entry point for later
   server validation.
 - `PYTHONPATH=apps/api .venv/bin/python -m app.worker` runs continuously for deployed environments. It polls pending
-  jobs with bounded backoff and exits cleanly on `SIGINT`/`SIGTERM`.
+  application screening jobs and bulk screening items with bounded backoff and exits cleanly on `SIGINT`/`SIGTERM`.
 - The worker stores attempts, timestamps, failure codes/messages, and endpoint slot metadata.
+- Bulk screening item failures are persisted on the item/work-item rows and are surfaced as `NEEDS_REVIEW`, not as a
+  candidate rejection.
 
 Worker startup is deployment/infrastructure responsibility. The web application does not start Chandra, Gemma, GPU
 services, or the screening worker.

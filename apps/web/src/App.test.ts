@@ -10,6 +10,12 @@ const apiMock = vi.hoisted(() => ({
   dashboard: vi.fn(),
   listJobs: vi.fn(),
   listApplications: vi.fn(),
+  listBulkBatches: vi.fn(),
+  bulkBatch: vi.fn(),
+  createExistingJobBulkBatch: vi.fn(),
+  createAdHocBulkBatch: vi.fn(),
+  confirmBulkCriteria: vi.fn(),
+  addBulkResumes: vi.fn(),
   screeningDossier: vi.fn(),
   applicationAccessStatus: vi.fn(),
   applicationAccessAssessment: vi.fn()
@@ -24,6 +30,7 @@ vi.mock('frappe-ui', () => ({
   Button: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}<slot /></button>` },
   DesktopShell: { template: '<div><slot name="sidebar" /><slot /></div>' },
   Divider: { template: '<hr />' },
+  Dialog: { props: ['open', 'title'], template: '<section v-if="open"><h2>{{ title }}</h2><slot /></section>' },
   ErrorMessage: { props: ['message'], template: '<p>{{ message }}</p>' },
   FormControl: {
     props: ['modelValue', 'label'],
@@ -92,6 +99,158 @@ const publishedJob = {
   updated_at: '2026-08-24T00:00:00Z'
 }
 
+const bulkBatch = {
+  id: 'bulk-1',
+  created_by_id: 'recruiter-1',
+  source_type: 'EXISTING_JOB',
+  job_id: 'job-1',
+  rubric_version_id: 'rubric-1',
+  ad_hoc_jd_document_id: null,
+  ad_hoc_structured_jd: null,
+  ad_hoc_structured_jd_sha256: null,
+  criteria_snapshot: [{ criterion_id: 'required', name: 'Required skills evidence', category: 'skill' }],
+  criteria_confirmed_by_id: null,
+  criteria_confirmed_at: null,
+  title: 'Full Stack - Aug 26',
+  status: 'COMPLETED',
+  total_files: 3,
+  accepted_count: 3,
+  duplicate_count: 0,
+  unsupported_count: 0,
+  completed_count: 3,
+  failed_count: 0,
+  started_at: '2026-08-26T00:00:00Z',
+  completed_at: '2026-08-26T00:10:00Z',
+  created_at: '2026-08-26T00:00:00Z',
+  updated_at: '2026-08-26T00:10:00Z',
+  jd_document: null,
+  job_title: 'Full Stack Developer',
+  items: [
+    {
+      id: 'bulk-item-1',
+      batch_id: 'bulk-1',
+      resume_document_id: 'doc-1',
+      original_filename: 'Aniket_Dhole.pdf',
+      content_sha256: 'a',
+      duplicate_of_item_id: null,
+      status: 'COMPLETED',
+      classification: 'MEETS_CRITERIA',
+      concise_reason: 'Required React, Node.js and SQL evidence is present.',
+      candidate_name: 'Aniket Dhole',
+      provider: 'mock',
+      provider_engine_version: 'mock-bulk-screening-v1',
+      engine_contract_version: 'candidate-evaluation-v1/platform-bulk-mapper-v1',
+      engine_artifact_schema_version: 'candidate-evaluation-v1',
+      engine_code_version: 'mock',
+      model_endpoint_slot: 'mock',
+      eligibility: 'PASS',
+      evidence_completeness: 0.9,
+      confirmed_experience_months: 32,
+      warnings: [],
+      failure_code: null,
+      failure_message: null,
+      raw_result_ref: null,
+      started_at: '2026-08-26T00:00:00Z',
+      completed_at: '2026-08-26T00:03:00Z',
+      failed_at: null,
+      created_at: '2026-08-26T00:00:00Z',
+      updated_at: '2026-08-26T00:03:00Z',
+      criterion_results: [
+        {
+          id: 'crit-1',
+          criterion_id: 'required',
+          criterion_name: 'Required skills evidence',
+          category: 'skill',
+          status: 'met',
+          explanation: 'Evidence is present.',
+          candidate_requirement: 'Required skills evidence',
+          evidence_found: ['React'],
+          missing_information: [],
+          ambiguity: [],
+          verification_needed: [],
+          matched_terms: ['React', 'Node.js', 'SQL'],
+          unmatched_terms: [],
+          evidence: [
+            {
+              id: 'evidence-1',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 1,
+              block_index: 0,
+              exact_text: 'Built React and Node.js systems with SQL.',
+              normalized_text: null,
+              evidence_status: 'supported',
+              notes: null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      id: 'bulk-item-2',
+      batch_id: 'bulk-1',
+      resume_document_id: 'doc-2',
+      original_filename: 'RahulSharma.pdf',
+      content_sha256: 'b',
+      duplicate_of_item_id: null,
+      status: 'COMPLETED',
+      classification: 'DOES_NOT_MEET_CRITERIA',
+      concise_reason: 'No sufficient evidence was found for Laravel.',
+      candidate_name: 'Rahul Sharma',
+      provider: 'mock',
+      provider_engine_version: 'mock-bulk-screening-v1',
+      engine_contract_version: 'candidate-evaluation-v1/platform-bulk-mapper-v1',
+      engine_artifact_schema_version: 'candidate-evaluation-v1',
+      engine_code_version: 'mock',
+      model_endpoint_slot: 'mock',
+      eligibility: 'FAIL',
+      evidence_completeness: 0.9,
+      confirmed_experience_months: 0,
+      warnings: [],
+      failure_code: null,
+      failure_message: null,
+      raw_result_ref: null,
+      started_at: '2026-08-26T00:00:00Z',
+      completed_at: '2026-08-26T00:04:00Z',
+      failed_at: null,
+      created_at: '2026-08-26T00:00:00Z',
+      updated_at: '2026-08-26T00:04:00Z',
+      criterion_results: []
+    },
+    {
+      id: 'bulk-item-3',
+      batch_id: 'bulk-1',
+      resume_document_id: 'doc-3',
+      original_filename: 'NeedsReview.pdf',
+      content_sha256: 'c',
+      duplicate_of_item_id: null,
+      status: 'FAILED',
+      classification: 'NEEDS_REVIEW',
+      concise_reason: 'Screening could not be completed because of a technical processing failure.',
+      candidate_name: null,
+      provider: 'mock',
+      provider_engine_version: 'mock-bulk-screening-v1',
+      engine_contract_version: null,
+      engine_artifact_schema_version: null,
+      engine_code_version: null,
+      model_endpoint_slot: null,
+      eligibility: null,
+      evidence_completeness: null,
+      confirmed_experience_months: null,
+      warnings: [],
+      failure_code: 'ENGINE_EXECUTION_FAILED',
+      failure_message: 'Synthetic technical failure.',
+      raw_result_ref: null,
+      started_at: '2026-08-26T00:00:00Z',
+      completed_at: null,
+      failed_at: '2026-08-26T00:05:00Z',
+      created_at: '2026-08-26T00:00:00Z',
+      updated_at: '2026-08-26T00:05:00Z',
+      criterion_results: []
+    }
+  ]
+}
+
 describe('Hiring Platform product shell', () => {
   beforeEach(() => {
     globalThis.history.pushState({}, '', '/')
@@ -105,6 +264,20 @@ describe('Hiring Platform product shell', () => {
       shortlisted_for_assessment: 0
     })
     apiMock.listJobs.mockResolvedValue([publishedJob])
+    apiMock.listBulkBatches.mockResolvedValue([bulkBatch])
+    apiMock.bulkBatch.mockResolvedValue(bulkBatch)
+    apiMock.createExistingJobBulkBatch.mockResolvedValue(bulkBatch)
+    apiMock.createAdHocBulkBatch.mockResolvedValue({
+      ...bulkBatch,
+      source_type: 'ADHOC_JD',
+      status: 'DRAFT',
+      ad_hoc_structured_jd: { job_title: 'Ad-hoc Full Stack', role_summary: 'React Node SQL', scoring_rubric: [] },
+      criteria_confirmed_at: null,
+      job_title: null,
+      items: []
+    })
+    apiMock.confirmBulkCriteria.mockResolvedValue({ ...bulkBatch, source_type: 'ADHOC_JD', status: 'READY', items: [] })
+    apiMock.addBulkResumes.mockResolvedValue(bulkBatch)
     apiMock.listApplications.mockResolvedValue([
       {
         id: 'application-1',
@@ -217,8 +390,34 @@ describe('Hiring Platform product shell', () => {
 
     expect(wrapper.text()).toContain('Recruitment dashboard')
     expect(wrapper.text()).toContain('Screening Review')
+    expect(wrapper.text()).toContain('Bulk Screening')
     expect(wrapper.text()).not.toContain('X-Actor-Id')
     expect(wrapper.text()).not.toContain('Run Worker Once')
     expect(wrapper.text()).not.toContain('Queue Screening')
+  })
+
+  it('renders bulk screening history and score-free result lanes', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Bulk screening')
+    expect(wrapper.text()).toContain('Full Stack - Aug 26')
+    expect(wrapper.text()).toContain('Meets Screening Criteria')
+    expect(wrapper.text()).toContain('Does Not Meet Screening Criteria')
+    expect(wrapper.text()).toContain('Needs Review')
+    expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present.')
+    expect(wrapper.text()).toContain('View Evidence')
+    expect(wrapper.text()).not.toContain('Score')
+    expect(wrapper.text()).not.toContain('weighted')
+    expect(wrapper.text()).not.toContain('90%')
   })
 })

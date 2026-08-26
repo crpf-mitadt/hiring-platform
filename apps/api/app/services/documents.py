@@ -57,12 +57,27 @@ class LocalDocumentStorage(DocumentStorage):
 
     def save_upload(self, file: UploadFile, *, purpose: DocumentPurpose) -> StoredDocument:
         filename = _safe_filename(file.filename or "")
+        data = file.file.read()
+        return self.save_bytes(
+            filename=filename,
+            data=data,
+            purpose=purpose,
+            content_type=file.content_type or "application/octet-stream",
+        )
+
+    def save_bytes(
+        self,
+        *,
+        filename: str,
+        data: bytes,
+        purpose: DocumentPurpose,
+        content_type: str = "application/octet-stream",
+    ) -> StoredDocument:
+        filename = _safe_filename(filename)
         suffix = Path(filename).suffix.lower()
         _validate_extension(purpose, suffix)
-        content_type = file.content_type or "application/octet-stream"
         _validate_content_type(purpose, content_type)
 
-        data = file.file.read()
         size = len(data)
         if size <= 0:
             raise DomainError("Uploaded document is empty")
@@ -95,6 +110,33 @@ class LocalDocumentStorage(DocumentStorage):
 
 def store_upload(db: Session, actor: User | None, file: UploadFile, purpose: DocumentPurpose) -> Document:
     stored = LocalDocumentStorage().save_upload(file, purpose=purpose)
+    return _document_from_stored(db, actor, stored, purpose)
+
+
+def store_bytes(
+    db: Session,
+    actor: User | None,
+    *,
+    filename: str,
+    data: bytes,
+    purpose: DocumentPurpose,
+    content_type: str = "application/octet-stream",
+) -> Document:
+    stored = LocalDocumentStorage().save_bytes(
+        filename=filename,
+        data=data,
+        purpose=purpose,
+        content_type=content_type,
+    )
+    return _document_from_stored(db, actor, stored, purpose)
+
+
+def _document_from_stored(
+    db: Session,
+    actor: User | None,
+    stored: StoredDocument,
+    purpose: DocumentPurpose,
+) -> Document:
     document = Document(
         purpose=purpose,
         original_filename=stored.original_filename,

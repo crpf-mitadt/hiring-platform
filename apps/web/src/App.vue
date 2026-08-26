@@ -8,6 +8,7 @@ import {
   Button,
   DesktopShell,
   Divider,
+  Dialog,
   ErrorMessage,
   FormControl,
   LoadingText,
@@ -32,6 +33,8 @@ import type {
   ApplicationStage,
   AssessmentAssignment,
   AssessmentAttempt,
+  BulkScreeningBatch,
+  BulkScreeningItem,
   CandidateStatus,
   Job,
   RubricVersion,
@@ -54,6 +57,7 @@ type RouteName =
   | 'staffApplications'
   | 'staffApplicationWorkspace'
   | 'staffScreeningReview'
+  | 'staffBulkScreening'
   | 'staffAssessments'
   | 'staffInterviews'
   | 'staffFinalDecisions'
@@ -61,6 +65,7 @@ type RouteName =
 const route = ref<RouteName>('publicHome')
 const routeJobId = ref<string | null>(null)
 const routeApplicationId = ref<string | null>(null)
+const routeBulkBatchId = ref<string | null>(null)
 const currentUser = ref<User | null>(null)
 const publicJobs = ref<Job[]>([])
 const staffJobs = ref<Job[]>([])
@@ -69,6 +74,9 @@ const selectedJob = ref<Job | null>(null)
 const selectedApplication = ref<Application | null>(null)
 const rubricVersions = ref<RubricVersion[]>([])
 const dossier = ref<ScreeningDossier | null>(null)
+const bulkBatches = ref<BulkScreeningBatch[]>([])
+const selectedBulkBatch = ref<BulkScreeningBatch | null>(null)
+const selectedBulkEvidenceItem = ref<BulkScreeningItem | null>(null)
 const applicationStatus = ref<CandidateStatus | null>(null)
 const continuationAssessment = ref<AssessmentAssignment | null>(null)
 const activeAttempt = ref<AssessmentAttempt | null>(null)
@@ -79,16 +87,25 @@ const loading = ref(false)
 const showJobEditor = ref(false)
 const activeJobTab = ref<'overview' | 'rubric' | 'applications'>('overview')
 const activeApplicationTab = ref<'overview' | 'screening' | 'assessment' | 'interview' | 'history'>('overview')
+const bulkWorkflowStep = ref<'source' | 'resumes' | 'review'>('source')
+const bulkSourceMode = ref<'existing' | 'adhoc'>('existing')
+const bulkResultTab = ref<'MEETS_CRITERIA' | 'DOES_NOT_MEET_CRITERIA' | 'NEEDS_REVIEW'>('MEETS_CRITERIA')
 const applicationStep = ref<'basic' | 'education' | 'experience' | 'documents' | 'review'>('basic')
 const remarks = ref('')
 const resumeFile = ref<File | null>(null)
 const photoFile = ref<File | null>(null)
 const videoFile = ref<File | null>(null)
+const bulkJdFile = ref<File | null>(null)
+const bulkZipFile = ref<File | null>(null)
+const bulkResumeFiles = ref<File[]>([])
+const bulkFolderFiles = ref<File[]>([])
 const isCompactViewport = ref(globalThis.innerWidth < 640)
+const bulkPollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
 
 const publicFilter = reactive({ search: '', location: '', employment_type: '' })
 const staffJobFilter = reactive({ search: '', status: '' })
 const applicationFilter = reactive({ search: '', job_id: '', stage: '' })
+const bulkForm = reactive({ job_id: '' })
 const loginForm = reactive({ email: '', password: '' })
 const jobForm = reactive({
   title: '',
@@ -173,6 +190,7 @@ const staffPageTitle = computed(() => {
     staffApplications: 'Applications',
     staffApplicationWorkspace: 'Application workspace',
     staffScreeningReview: 'Screening review',
+    staffBulkScreening: 'Bulk screening',
     staffAssessments: 'Assessments',
     staffInterviews: 'Interviews',
     staffFinalDecisions: 'Final decisions'
@@ -217,6 +235,7 @@ const staffNav = computed(() => [
     icon: 'lucide-file-search',
     count: dashboard.value.screening_reviews_pending ?? null
   },
+  { route: 'staffBulkScreening' as const, label: 'Bulk Screening', icon: 'lucide-files', count: null },
   { route: 'staffAssessments' as const, label: 'Assessments', icon: 'lucide-circle-check', count: null },
   { route: 'staffInterviews' as const, label: 'Interviews', icon: 'lucide-calendar-clock', count: null },
   { route: 'staffFinalDecisions' as const, label: 'Final Decisions', icon: 'lucide-users-round', count: null }
@@ -252,6 +271,39 @@ const applicationStageOptions = computed(() => [
   { label: 'All stages', value: '' },
   ...applicationStages.map((stage) => ({ label: stageLabel(stage), value: stage }))
 ])
+const bulkJobOptions = computed(() => [
+  { label: 'Choose approved job', value: '' },
+  ...staffJobs
+    .value
+    .filter((job) => job.status === 'PUBLISHED')
+    .map((job) => ({ label: job.title, value: job.id }))
+])
+const selectedBulkCriteria = computed(() => selectedBulkBatch.value?.criteria_snapshot ?? [])
+const showBulkComposer = computed(() => selectedBulkBatch.value === null || routeBulkBatchId.value === null)
+const bulkProgressText = computed(() => {
+  if (!selectedBulkBatch.value) return 'No batch selected'
+  return `${selectedBulkBatch.value.completed_count + selectedBulkBatch.value.failed_count} / ${selectedBulkBatch.value.accepted_count} complete`
+})
+const bulkItemsByClassification = computed(() => {
+  const items = selectedBulkBatch.value?.items ?? []
+  return {
+    MEETS_CRITERIA: items.filter((item) => item.classification === 'MEETS_CRITERIA'),
+    DOES_NOT_MEET_CRITERIA: items.filter((item) => item.classification === 'DOES_NOT_MEET_CRITERIA'),
+    NEEDS_REVIEW: items.filter(
+      (item) =>
+        item.classification === 'NEEDS_REVIEW' ||
+        item.status === 'FAILED' ||
+        item.status === 'UNSUPPORTED' ||
+        item.status === 'DUPLICATE'
+    )
+  }
+})
+const bulkEvidenceDialogOpen = computed({
+  get: () => selectedBulkEvidenceItem.value !== null,
+  set: (open: boolean) => {
+    if (!open) selectedBulkEvidenceItem.value = null
+  }
+})
 const applicationSteps = [
   { value: 'basic', label: 'Basic Information' },
   { value: 'education', label: 'Education' },
@@ -271,6 +323,16 @@ const applicationTabOptions = [
   { value: 'interview', label: 'Interview' },
   { value: 'history', label: 'History' }
 ]
+const bulkWorkflowSteps = [
+  { value: 'source', label: 'Screen Against' },
+  { value: 'resumes', label: 'Upload Resumes' },
+  { value: 'review', label: 'Review' }
+]
+const bulkResultTabs = [
+  { value: 'MEETS_CRITERIA', label: 'Meets Criteria' },
+  { value: 'DOES_NOT_MEET_CRITERIA', label: 'Does Not Meet' },
+  { value: 'NEEDS_REVIEW', label: 'Needs Review' }
+]
 const applicationStages: ApplicationStage[] = [
   'APPLICATION_RECEIVED',
   'SCREENING_PENDING',
@@ -282,16 +344,17 @@ const applicationStages: ApplicationStage[] = [
   'NOT_PROGRESSED_AFTER_SCREENING'
 ]
 
-function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId?: string } = {}) {
+function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId?: string; batchId?: string } = {}) {
   route.value = nextRoute
   routeJobId.value = options.jobId ?? null
   routeApplicationId.value = options.applicationId ?? null
+  routeBulkBatchId.value = options.batchId ?? null
   const path = pathForRoute(nextRoute, options)
   if (globalThis.location.pathname !== path) globalThis.history.pushState({}, '', path)
   void loadForRoute()
 }
 
-function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicationId?: string } = {}) {
+function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicationId?: string; batchId?: string } = {}) {
   const paths: Record<RouteName, string> = {
     publicHome: '/',
     publicJobs: '/jobs',
@@ -306,6 +369,7 @@ function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicati
     staffApplications: '/app/applications',
     staffApplicationWorkspace: `/app/applications/${options.applicationId ?? routeApplicationId.value ?? ''}`,
     staffScreeningReview: '/app/screening-review',
+    staffBulkScreening: options.batchId ?? routeBulkBatchId.value ? `/app/bulk-screening/${options.batchId ?? routeBulkBatchId.value}` : '/app/bulk-screening',
     staffAssessments: '/app/assessments',
     staffInterviews: '/app/interviews',
     staffFinalDecisions: '/app/final-decisions'
@@ -338,6 +402,11 @@ function routeFromLocation(): RouteName {
     return 'staffApplicationWorkspace'
   }
   if (path === '/app/screening-review') return 'staffScreeningReview'
+  if (path === '/app/bulk-screening') return 'staffBulkScreening'
+  if (path.startsWith('/app/bulk-screening/')) {
+    routeBulkBatchId.value = path.split('/')[3]
+    return 'staffBulkScreening'
+  }
   if (path === '/app/assessments') return 'staffAssessments'
   if (path === '/app/interviews') return 'staffInterviews'
   if (path === '/app/final-decisions') return 'staffFinalDecisions'
@@ -392,6 +461,7 @@ async function loadForRoute() {
   if (route.value === 'staffApplicationWorkspace' && routeApplicationId.value) {
     await openApplicationWorkspace(routeApplicationId.value)
   }
+  if (route.value === 'staffBulkScreening') await loadBulkScreening()
 }
 
 async function loadPublicJobs() {
@@ -429,6 +499,13 @@ async function loadApplications() {
   if (applicationFilter.stage) params.set('stage', applicationFilter.stage)
   const rows = await run(() => api.listApplications(params))
   if (rows) applications.value = rows
+}
+
+async function loadBulkScreening() {
+  const batches = await run(() => api.listBulkBatches())
+  if (batches) bulkBatches.value = batches
+  if (routeBulkBatchId.value) await openBulkBatch(routeBulkBatchId.value, false)
+  manageBulkPolling()
 }
 
 async function login() {
@@ -645,6 +722,134 @@ async function retryLatestScreening() {
   if (retry && selectedApplication.value) await openApplicationWorkspace(selectedApplication.value.id)
 }
 
+async function openBulkBatch(batchId: string, pushRoute = true) {
+  const batch = await run(() => api.bulkBatch(batchId))
+  if (!batch) return
+  selectedBulkBatch.value = batch
+  routeBulkBatchId.value = batch.id
+  if (pushRoute) navigate('staffBulkScreening', { batchId: batch.id })
+  manageBulkPolling()
+}
+
+function newBulkScreening() {
+  selectedBulkBatch.value = null
+  selectedBulkEvidenceItem.value = null
+  routeBulkBatchId.value = null
+  bulkWorkflowStep.value = 'source'
+  bulkSourceMode.value = 'existing'
+  bulkResultTab.value = 'MEETS_CRITERIA'
+  bulkForm.job_id = ''
+  bulkJdFile.value = null
+  bulkZipFile.value = null
+  bulkResumeFiles.value = []
+  bulkFolderFiles.value = []
+  navigate('staffBulkScreening')
+}
+
+async function uploadAdHocBulkJd() {
+  if (!bulkJdFile.value) {
+    errorMessage.value = 'Choose a JD file before continuing.'
+    return
+  }
+  const batch = await run(() => api.createAdHocBulkBatch(bulkJdFile.value!), 'JD extracted for criteria review.')
+  if (batch) {
+    selectedBulkBatch.value = batch
+    routeBulkBatchId.value = null
+    bulkWorkflowStep.value = 'source'
+  }
+}
+
+async function confirmAdHocBulkCriteria() {
+  if (!selectedBulkBatch.value) return
+  const batch = await run(() => api.confirmBulkCriteria(selectedBulkBatch.value!.id), 'Criteria confirmed.')
+  if (batch) {
+    selectedBulkBatch.value = batch
+    bulkWorkflowStep.value = 'resumes'
+  }
+}
+
+async function startBulkScreening() {
+  if (bulkSourceMode.value === 'existing') {
+    if (!bulkForm.job_id) {
+      errorMessage.value = 'Choose an approved job before starting bulk screening.'
+      return
+    }
+    const files = [...bulkResumeFiles.value, ...bulkFolderFiles.value]
+    const batch = await run(
+      () => api.createExistingJobBulkBatch(bulkForm.job_id, files, bulkZipFile.value),
+      'Bulk screening queued.'
+    )
+    if (batch) {
+      selectedBulkBatch.value = batch
+      bulkWorkflowStep.value = 'review'
+      navigate('staffBulkScreening', { batchId: batch.id })
+    }
+    return
+  }
+  if (!selectedBulkBatch.value || selectedBulkBatch.value.status === 'DRAFT') {
+    errorMessage.value = 'Confirm the ad-hoc JD criteria before uploading resumes.'
+    return
+  }
+  const files = [...bulkResumeFiles.value, ...bulkFolderFiles.value]
+  const batch = await run(
+    () => api.addBulkResumes(selectedBulkBatch.value!.id, files, bulkZipFile.value),
+    'Bulk screening queued.'
+  )
+  if (batch) {
+    selectedBulkBatch.value = batch
+    bulkWorkflowStep.value = 'review'
+    navigate('staffBulkScreening', { batchId: batch.id })
+  }
+}
+
+function setBulkJdFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  bulkJdFile.value = input.files?.[0] ?? null
+}
+
+function setBulkResumeFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  bulkResumeFiles.value = Array.from(input.files ?? [])
+}
+
+function setBulkFolderFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  bulkFolderFiles.value = Array.from(input.files ?? [])
+}
+
+function setBulkZipFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  bulkZipFile.value = input.files?.[0] ?? null
+}
+
+function viewBulkEvidence(item: BulkScreeningItem) {
+  selectedBulkEvidenceItem.value = item
+}
+
+function manageBulkPolling() {
+  if (bulkPollHandle.value !== null) {
+    globalThis.clearInterval(bulkPollHandle.value)
+    bulkPollHandle.value = null
+  }
+  const status = selectedBulkBatch.value?.status
+  if (route.value === 'staffBulkScreening' && routeBulkBatchId.value && ['QUEUED', 'RUNNING'].includes(status ?? '')) {
+    bulkPollHandle.value = globalThis.setInterval(() => {
+      if (routeBulkBatchId.value) void openBulkBatch(routeBulkBatchId.value, false)
+    }, 3000)
+  }
+}
+
+function bulkClassificationLabel(value: string | null | undefined) {
+  if (value === 'MEETS_CRITERIA') return 'Meets screening criteria'
+  if (value === 'DOES_NOT_MEET_CRITERIA') return 'Does not meet screening criteria'
+  if (value === 'NEEDS_REVIEW') return 'Needs review'
+  return stageLabel(value)
+}
+
+function bulkUploadedCount() {
+  return bulkResumeFiles.value.length + bulkFolderFiles.value.length + (bulkZipFile.value ? 1 : 0)
+}
+
 function openPublicJob(job: Job) {
   selectedJob.value = job
   navigate('publicJobDetail', { jobId: job.id })
@@ -707,27 +912,32 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   globalThis.removeEventListener('resize', updateViewportState)
+  if (bulkPollHandle.value !== null) globalThis.clearInterval(bulkPollHandle.value)
 })
 </script>
 
 <template>
-  <main class="min-h-screen bg-surface-base text-ink-gray-9">
+  <main class="min-h-screen overflow-x-hidden bg-surface-base text-ink-gray-9">
     <section v-if="!route.startsWith('staff') || route === 'staffLogin'" class="min-h-screen">
       <PageHeader>
         <Button variant="ghost" theme="gray" @click="navigate('publicHome')">
           <span class="flex items-center gap-2">
             <Avatar label="MIT-ADT University Careers" size="md" />
-            <span class="text-base-medium text-ink-gray-8">MIT-ADT University Careers</span>
+            <span class="hidden text-base-medium text-ink-gray-8 sm:inline">MIT-ADT University Careers</span>
+            <span class="text-base-medium text-ink-gray-8 sm:hidden">Careers</span>
           </span>
         </Button>
-        <div class="flex items-center gap-2">
+        <div class="hidden items-center gap-2 sm:flex">
           <Button label="Open Positions" variant="ghost" theme="gray" @click="navigate('publicJobs')" />
           <Button label="Recruitment Guidelines" variant="ghost" theme="gray" @click="navigate('publicHome')" />
           <Button label="Staff Sign In" variant="subtle" theme="gray" @click="navigate('staffLogin')" />
         </div>
+        <div class="sm:hidden">
+          <Button label="Sign In" variant="subtle" theme="gray" @click="navigate('staffLogin')" />
+        </div>
       </PageHeader>
 
-      <div class="mx-auto w-full max-w-[980px] px-3 py-6 sm:px-5">
+      <div class="mx-auto w-full min-w-0 max-w-[980px] px-3 py-6 sm:px-5">
         <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
         <Alert v-if="message" :title="message" theme="green" class="mb-4" />
 
@@ -735,8 +945,8 @@ onBeforeUnmount(() => {
           <div class="space-y-4 py-6">
             <Badge label="University recruitment" variant="subtle" theme="gray" />
             <div class="space-y-2">
-              <h1 class="text-3xl font-semibold text-ink-gray-9 sm:text-4xl">Open recruitment at MIT-ADT University</h1>
-              <p class="max-w-[760px] text-p-base text-ink-gray-7">
+              <h1 class="max-w-xs whitespace-normal break-words text-2xl font-semibold text-ink-gray-9 sm:max-w-none sm:text-4xl">Open recruitment at MIT-ADT University</h1>
+              <p class="max-w-xs whitespace-normal text-p-base text-ink-gray-7 sm:max-w-[760px]">
                 Browse current vacancies and apply directly. AI screening supports staff review only; final hiring
                 decisions remain human decisions.
               </p>
@@ -1022,6 +1232,7 @@ onBeforeUnmount(() => {
       <PageHeader>
         <h1 class="truncate text-2xl font-semibold text-ink-gray-8">{{ staffPageTitle }}</h1>
         <Button v-if="route === 'staffJobs'" label="New job" icon-left="lucide-plus" variant="solid" theme="gray" @click="showJobEditor = !showJobEditor" />
+        <Button v-if="route === 'staffBulkScreening'" label="New Screening" icon-left="lucide-plus" variant="solid" theme="gray" @click="newBulkScreening" />
       </PageHeader>
       <template v-if="isCompactViewport" #nav>
         <MobileNav>
@@ -1137,6 +1348,240 @@ onBeforeUnmount(() => {
           <Alert v-else title="No applications match your filters" theme="gray" />
         </section>
 
+        <section v-if="route === 'staffBulkScreening'" class="space-y-5">
+          <section v-if="showBulkComposer" class="space-y-5">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <Badge label="HR only" variant="subtle" theme="gray" />
+                <h2 class="mt-2 text-xl font-semibold text-ink-gray-8">Bulk Screening</h2>
+                <p class="mt-1 text-p-base text-ink-gray-6">
+                  Screen resume batches against approved criteria. Results are screening evidence, not final decisions.
+                </p>
+              </div>
+            </div>
+
+            <section class="space-y-3">
+              <h3 class="text-lg-semibold text-ink-gray-8">Batch history</h3>
+              <List v-if="bulkBatches.length" :columns="isCompactViewport ? ['minmax(0,1fr)'] : ['minmax(0,1fr)', '16rem', '9rem', '10rem', '9rem']" :row-height="58">
+                <ListHeader class="hidden sm:grid">
+                  <ListHeaderCell>Batch</ListHeaderCell>
+                  <ListHeaderCell>Job / JD</ListHeaderCell>
+                  <ListHeaderCell>Created</ListHeaderCell>
+                  <ListHeaderCell>Resume count</ListHeaderCell>
+                  <ListHeaderCell>Status</ListHeaderCell>
+                </ListHeader>
+                <ListRow v-for="batch in bulkBatches" :key="batch.id" :value="batch.id" @click="openBulkBatch(batch.id)">
+                  <ListCell>
+                    <div>
+                      <div class="truncate text-base-medium text-ink-gray-8">{{ batch.title }}</div>
+                      <div class="mt-1 text-sm text-ink-gray-5 sm:hidden">{{ batch.accepted_count }} resumes · {{ stageLabel(batch.status) }}</div>
+                    </div>
+                  </ListCell>
+                  <ListCell class="hidden sm:flex">{{ batch.job_title ?? stageLabel(batch.source_type) }}</ListCell>
+                  <ListCell class="hidden sm:flex">{{ formatDate(batch.created_at) }}</ListCell>
+                  <ListCell class="hidden sm:flex">{{ batch.accepted_count }} resumes</ListCell>
+                  <ListCell class="hidden sm:flex"><StatusBadge :value="batch.status" /></ListCell>
+                </ListRow>
+              </List>
+              <Alert v-else title="No bulk screening batches yet" description="Create a new screening batch from an approved job or an ad-hoc JD." theme="gray" />
+            </section>
+
+            <Divider />
+
+            <section class="max-w-3xl space-y-5">
+              <TabButtons v-model="bulkWorkflowStep" :options="bulkWorkflowSteps" />
+              <section v-if="bulkWorkflowStep === 'source'" class="space-y-4">
+                <TabButtons
+                  v-model="bulkSourceMode"
+                  :options="[
+                    { value: 'existing', label: 'Existing Job' },
+                    { value: 'adhoc', label: 'Upload JD' }
+                  ]"
+                />
+                <section v-if="bulkSourceMode === 'existing'" class="space-y-3">
+                  <FormControl v-model="bulkForm.job_id" type="select" label="Approved job" :options="bulkJobOptions" />
+                  <Alert title="Current approved criteria will be used" description="Bulk screening uses the job's current approved StructuredJD exactly. It does not regenerate the JD." theme="gray" />
+                  <Button label="Continue" variant="solid" theme="gray" :disabled="!bulkForm.job_id" @click="bulkWorkflowStep = 'resumes'" />
+                </section>
+                <section v-else class="space-y-3">
+                  <label class="space-y-1 text-sm text-ink-gray-7">
+                    <span>Ad-hoc JD PDF, DOCX, TXT, or MD</span>
+                    <input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5" type="file" accept=".pdf,.docx,.txt,.md" @change="setBulkJdFile">
+                  </label>
+                  <Button label="Extract Criteria" variant="solid" theme="gray" :disabled="!bulkJdFile" @click="uploadAdHocBulkJd" />
+                  <section v-if="selectedBulkBatch?.source_type === 'ADHOC_JD'" class="space-y-3 border-t border-outline-gray-1 pt-4">
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 class="text-lg-semibold text-ink-gray-8">
+                          {{ selectedBulkBatch.ad_hoc_structured_jd?.job_title ?? selectedBulkBatch.title }}
+                        </h3>
+                        <p class="text-p-base text-ink-gray-6">
+                          {{ selectedBulkBatch.ad_hoc_structured_jd?.role_summary ?? 'Review extracted criteria before screening.' }}
+                        </p>
+                      </div>
+                      <StatusBadge :value="selectedBulkBatch.status" />
+                    </div>
+                    <List :columns="['minmax(0,1fr)', '8rem']">
+                      <ListRow v-for="criterion in selectedBulkCriteria" :key="String(criterion.criterion_id)" :value="String(criterion.criterion_id)">
+                        <ListCell>
+                          <div>
+                            <div class="text-base-medium text-ink-gray-8">{{ criterion.name }}</div>
+                            <div class="mt-1 text-sm text-ink-gray-5">{{ criterion.category }}</div>
+                          </div>
+                        </ListCell>
+                        <ListCell><Badge :label="criterion.mandatory ? 'Mandatory' : 'Review'" variant="subtle" theme="gray" /></ListCell>
+                      </ListRow>
+                    </List>
+                    <Button label="Confirm Criteria & Continue" variant="solid" theme="gray" @click="confirmAdHocBulkCriteria" />
+                  </section>
+                </section>
+              </section>
+
+              <section v-if="bulkWorkflowStep === 'resumes'" class="space-y-4">
+                <Alert title="Supported resume formats" description="Bulk screening currently accepts PDF resumes and structured JSON resumes. ZIP archives may contain those same formats." theme="gray" />
+                <div class="grid gap-4 sm:grid-cols-3">
+                  <label class="space-y-1 text-sm text-ink-gray-7">
+                    <span>Choose Files</span>
+                    <input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5" type="file" accept=".pdf,.json" multiple @change="setBulkResumeFiles">
+                  </label>
+                  <label class="space-y-1 text-sm text-ink-gray-7">
+                    <span>Choose Folder</span>
+                    <input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5" type="file" accept=".pdf,.json" multiple webkitdirectory @change="setBulkFolderFiles">
+                  </label>
+                  <label class="space-y-1 text-sm text-ink-gray-7">
+                    <span>Upload ZIP</span>
+                    <input class="block w-full rounded border border-outline-gray-2 bg-surface-base px-2 py-1.5" type="file" accept=".zip" @change="setBulkZipFile">
+                  </label>
+                </div>
+                <List :columns="['minmax(0,1fr)', '8rem']">
+                  <ListRow value="files"><ListCell>Files selected</ListCell><ListCell>{{ bulkResumeFiles.length }}</ListCell></ListRow>
+                  <ListRow value="folder"><ListCell>Folder files discovered</ListCell><ListCell>{{ bulkFolderFiles.length }}</ListCell></ListRow>
+                  <ListRow value="zip"><ListCell>ZIP archive</ListCell><ListCell>{{ bulkZipFile?.name ?? 'None' }}</ListCell></ListRow>
+                </List>
+                <Button label="Review" variant="solid" theme="gray" :disabled="bulkUploadedCount() === 0" @click="bulkWorkflowStep = 'review'" />
+              </section>
+
+              <section v-if="bulkWorkflowStep === 'review'" class="space-y-4">
+                <Alert title="Review before starting" description="Duplicates are ignored by SHA-256. Unsupported or unsafe files are held for review and are not screened." theme="gray" />
+                <List :columns="['minmax(0,1fr)', 'minmax(0,1fr)']">
+                  <ListRow value="source"><ListCell>Screen against</ListCell><ListCell>{{ bulkSourceMode === 'existing' ? staffJobs.find((job) => job.id === bulkForm.job_id)?.title : selectedBulkBatch?.title }}</ListCell></ListRow>
+                  <ListRow value="criteria"><ListCell>Confirmed criteria</ListCell><ListCell>{{ selectedBulkCriteria.length || 'Current approved job criteria' }}</ListCell></ListRow>
+                  <ListRow value="resumes"><ListCell>Upload selection</ListCell><ListCell>{{ bulkUploadedCount() }} source{{ bulkUploadedCount() === 1 ? '' : 's' }}</ListCell></ListRow>
+                </List>
+                <Button label="Start Screening" variant="solid" theme="gray" :disabled="bulkUploadedCount() === 0" @click="startBulkScreening" />
+              </section>
+            </section>
+          </section>
+
+          <section v-else-if="selectedBulkBatch" class="space-y-5">
+            <Breadcrumbs :items="[{ label: 'Bulk Screening', route: '/app/bulk-screening' }, { label: selectedBulkBatch.title }]" />
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 class="text-2xl font-semibold text-ink-gray-8">{{ selectedBulkBatch.title }}</h2>
+                <p class="mt-1 text-p-base text-ink-gray-6">
+                  {{ selectedBulkBatch.job_title ?? stageLabel(selectedBulkBatch.source_type) }} · {{ bulkProgressText }}
+                </p>
+              </div>
+              <div class="flex items-center gap-2">
+                <StatusBadge :value="selectedBulkBatch.status" />
+                <Button label="Refresh" variant="subtle" theme="gray" icon-left="lucide-refresh-cw" @click="openBulkBatch(selectedBulkBatch.id, false)" />
+              </div>
+            </div>
+
+            <section class="grid gap-3 sm:grid-cols-4">
+              <div class="border-b border-outline-gray-1 pb-3"><div class="text-2xl font-semibold text-ink-gray-9">{{ selectedBulkBatch.accepted_count }}</div><div class="text-sm text-ink-gray-5">Queued resumes</div></div>
+              <div class="border-b border-outline-gray-1 pb-3"><div class="text-2xl font-semibold text-ink-gray-9">{{ selectedBulkBatch.completed_count }}</div><div class="text-sm text-ink-gray-5">Completed</div></div>
+              <div class="border-b border-outline-gray-1 pb-3"><div class="text-2xl font-semibold text-ink-gray-9">{{ selectedBulkBatch.duplicate_count }}</div><div class="text-sm text-ink-gray-5">Duplicates ignored</div></div>
+              <div class="border-b border-outline-gray-1 pb-3"><div class="text-2xl font-semibold text-ink-gray-9">{{ selectedBulkBatch.unsupported_count + selectedBulkBatch.failed_count }}</div><div class="text-sm text-ink-gray-5">Needs attention</div></div>
+            </section>
+
+            <section v-if="['QUEUED', 'RUNNING'].includes(selectedBulkBatch.status)" class="space-y-3">
+              <Alert :title="`Screening ${selectedBulkBatch.accepted_count} resumes`" :description="bulkProgressText" theme="blue" />
+              <List :columns="['minmax(0,1fr)', '10rem']">
+                <ListRow v-for="item in selectedBulkBatch.items" :key="item.id" :value="item.id">
+                  <ListCell>{{ item.original_filename }}</ListCell>
+                  <ListCell><StatusBadge :value="item.status" /></ListCell>
+                </ListRow>
+              </List>
+            </section>
+
+            <section class="space-y-4">
+              <TabButtons v-if="isCompactViewport" v-model="bulkResultTab" :options="bulkResultTabs" />
+              <div v-if="!isCompactViewport" class="grid gap-5 lg:grid-cols-2">
+                <section class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <h3 class="text-lg-semibold text-ink-gray-8">Meets Screening Criteria</h3>
+                    <Badge :label="String(bulkItemsByClassification.MEETS_CRITERIA.length)" variant="subtle" theme="green" />
+                  </div>
+                  <List :columns="['minmax(0,1fr)', '8rem']">
+                    <ListRow v-for="item in bulkItemsByClassification.MEETS_CRITERIA" :key="item.id" :value="item.id">
+                      <ListCell>
+                        <div>
+                          <div class="text-base-medium text-ink-gray-8">{{ item.candidate_name ?? item.original_filename }}</div>
+                          <div class="mt-1 text-sm text-ink-gray-5">{{ item.original_filename }}</div>
+                          <p class="mt-1 text-p-sm text-ink-gray-7">{{ item.concise_reason }}</p>
+                        </div>
+                      </ListCell>
+                      <ListCell><Button label="View Evidence" variant="ghost" theme="gray" @click="viewBulkEvidence(item)" /></ListCell>
+                    </ListRow>
+                  </List>
+                </section>
+                <section class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <h3 class="text-lg-semibold text-ink-gray-8">Does Not Meet Screening Criteria</h3>
+                    <Badge :label="String(bulkItemsByClassification.DOES_NOT_MEET_CRITERIA.length)" variant="subtle" theme="gray" />
+                  </div>
+                  <List :columns="['minmax(0,1fr)', '8rem']">
+                    <ListRow v-for="item in bulkItemsByClassification.DOES_NOT_MEET_CRITERIA" :key="item.id" :value="item.id">
+                      <ListCell>
+                        <div>
+                          <div class="text-base-medium text-ink-gray-8">{{ item.candidate_name ?? item.original_filename }}</div>
+                          <div class="mt-1 text-sm text-ink-gray-5">{{ item.original_filename }}</div>
+                          <p class="mt-1 text-p-sm text-ink-gray-7">{{ item.concise_reason }}</p>
+                        </div>
+                      </ListCell>
+                      <ListCell><Button label="View Evidence" variant="ghost" theme="gray" @click="viewBulkEvidence(item)" /></ListCell>
+                    </ListRow>
+                  </List>
+                </section>
+              </div>
+
+              <section v-if="isCompactViewport" class="space-y-3">
+                <List :columns="['minmax(0,1fr)', '8rem']">
+                  <ListRow v-for="item in bulkItemsByClassification[bulkResultTab]" :key="item.id" :value="item.id">
+                    <ListCell>
+                      <div>
+                        <div class="text-base-medium text-ink-gray-8">{{ item.candidate_name ?? item.original_filename }}</div>
+                        <p class="mt-1 text-p-sm text-ink-gray-7">{{ item.concise_reason }}</p>
+                      </div>
+                    </ListCell>
+                    <ListCell><Button label="View Evidence" variant="ghost" theme="gray" @click="viewBulkEvidence(item)" /></ListCell>
+                  </ListRow>
+                </List>
+              </section>
+
+              <section class="space-y-3 border-t border-outline-gray-1 pt-4">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-lg-semibold text-ink-gray-8">Needs Review</h3>
+                  <Badge :label="String(bulkItemsByClassification.NEEDS_REVIEW.length)" variant="subtle" theme="amber" />
+                </div>
+                <List v-if="bulkItemsByClassification.NEEDS_REVIEW.length" :columns="['minmax(0,1fr)', '9rem']">
+                  <ListRow v-for="item in bulkItemsByClassification.NEEDS_REVIEW" :key="item.id" :value="item.id">
+                    <ListCell>
+                      <div>
+                        <div class="text-base-medium text-ink-gray-8">{{ item.original_filename }}</div>
+                        <p class="mt-1 text-p-sm text-ink-gray-7">{{ item.concise_reason ?? item.failure_message ?? bulkClassificationLabel(item.classification) }}</p>
+                      </div>
+                    </ListCell>
+                    <ListCell><Button label="View Evidence" variant="ghost" theme="gray" @click="viewBulkEvidence(item)" /></ListCell>
+                  </ListRow>
+                </List>
+                <Alert v-else title="No resumes need review" theme="gray" />
+              </section>
+            </section>
+          </section>
+        </section>
+
         <section v-if="route === 'staffApplicationWorkspace' && selectedApplication" class="space-y-5">
           <Breadcrumbs :items="[{ label: 'Applications', route: '/app/applications' }, { label: selectedApplication.candidate?.full_name ?? 'Candidate' }]" />
           <div class="flex items-start justify-between gap-3">
@@ -1233,5 +1678,58 @@ onBeforeUnmount(() => {
         <section v-if="route === 'staffFinalDecisions'"><Alert title="Final decisions" description="Final human decision workflow remains audit-first future work." theme="gray" /></section>
       </div>
     </component>
+
+    <Dialog
+      v-model:open="bulkEvidenceDialogOpen"
+      size="xl"
+      :title="selectedBulkEvidenceItem?.original_filename ?? 'Screening evidence'"
+    >
+      <section v-if="selectedBulkEvidenceItem" class="space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <StatusBadge :value="selectedBulkEvidenceItem.status" />
+          <Badge
+            v-if="selectedBulkEvidenceItem.classification"
+            :label="bulkClassificationLabel(selectedBulkEvidenceItem.classification)"
+            variant="subtle"
+            theme="gray"
+          />
+        </div>
+        <p class="text-p-base text-ink-gray-7">{{ selectedBulkEvidenceItem.concise_reason }}</p>
+        <Alert
+          v-if="selectedBulkEvidenceItem.failure_message"
+          title="Technical review required"
+          :description="selectedBulkEvidenceItem.failure_message"
+          theme="red"
+        />
+        <List v-if="selectedBulkEvidenceItem.criterion_results.length" :columns="['minmax(0,1fr)', '9rem']">
+          <ListRow v-for="criterion in selectedBulkEvidenceItem.criterion_results" :key="criterion.id" :value="criterion.id">
+            <ListCell>
+              <div>
+                <div class="text-base-medium text-ink-gray-8">{{ criterion.criterion_name }}</div>
+                <p class="mt-1 text-p-sm text-ink-gray-6">{{ criterion.explanation }}</p>
+                <div v-if="criterion.matched_terms.length" class="mt-2 text-sm text-ink-gray-7">
+                  Matched: {{ criterion.matched_terms.join(', ') }}
+                </div>
+                <div v-if="criterion.unmatched_terms.length" class="mt-1 text-sm text-ink-gray-7">
+                  Gaps: {{ criterion.unmatched_terms.join(', ') }}
+                </div>
+                <details
+                  v-for="evidence in criterion.evidence"
+                  :key="evidence.id"
+                  class="mt-2 rounded border border-outline-gray-1 bg-surface-gray-1 p-2"
+                >
+                  <summary class="text-sm text-ink-gray-7">
+                    {{ evidence.source_type }} · {{ evidence.evidence_status }}
+                  </summary>
+                  <p class="mt-2 text-p-sm text-ink-gray-7">{{ evidence.exact_text }}</p>
+                </details>
+              </div>
+            </ListCell>
+            <ListCell><StatusBadge :value="criterion.status" /></ListCell>
+          </ListRow>
+        </List>
+        <Alert v-else title="No criterion evidence available" theme="gray" />
+      </section>
+    </Dialog>
   </main>
 </template>

@@ -2,6 +2,7 @@ import type {
   Application,
   AssessmentAssignment,
   AssessmentAttempt,
+  BulkScreeningBatch,
   CandidateStatus,
   DocumentRead,
   Job,
@@ -204,5 +205,35 @@ export const api = {
       method: 'POST',
       body: { remarks }
     })
+  },
+  listBulkBatches() {
+    return request<BulkScreeningBatch[]>('/api/bulk-screening/batches')
+  },
+  bulkBatch(batchId: string) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}`)
+  },
+  createExistingJobBulkBatch(jobId: string, files: File[], zipFile: File | null) {
+    const formData = new FormData()
+    formData.append('job_id', jobId)
+    files.forEach((file) => formData.append('files', file))
+    if (zipFile) formData.append('zip_file', zipFile)
+    return requestForm<BulkScreeningBatch>('/api/bulk-screening/batches/existing-job', formData)
+  },
+  createAdHocBulkBatch(jdFile: File) {
+    const formData = new FormData()
+    formData.append('jd_file', jdFile)
+    return requestForm<BulkScreeningBatch>('/api/bulk-screening/batches/ad-hoc-jd', formData)
+  },
+  confirmBulkCriteria(batchId: string) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/confirm-criteria`, {
+      method: 'POST',
+      body: { confirmed: true }
+    })
+  },
+  addBulkResumes(batchId: string, files: File[], zipFile: File | null) {
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files', file))
+    if (zipFile) formData.append('zip_file', zipFile)
+    return requestForm<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/resumes`, formData)
   }
 }

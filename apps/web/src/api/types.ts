@@ -283,3 +283,95 @@ export type ScreeningDossier = {
   intro_video: Record<string, unknown> | null
   interview: Record<string, unknown> | null
 }
+
+export type BulkScreeningClassification = 'MEETS_CRITERIA' | 'DOES_NOT_MEET_CRITERIA' | 'NEEDS_REVIEW'
+
+export type BulkStructuredJd = {
+  job_title?: string
+  role_summary?: string
+  [key: string]: unknown
+}
+
+export type BulkScreeningCriterionSnapshot = {
+  criterion_id?: string
+  name?: string
+  category?: string
+  mandatory?: boolean
+  [key: string]: unknown
+}
+
+export type BulkScreeningItem = {
+  id: string
+  batch_id: string
+  resume_document_id: string | null
+  original_filename: string
+  content_sha256: string | null
+  duplicate_of_item_id: string | null
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DUPLICATE' | 'UNSUPPORTED'
+  classification: BulkScreeningClassification | null
+  concise_reason: string | null
+  candidate_name: string | null
+  provider: string | null
+  provider_engine_version: string | null
+  engine_contract_version: string | null
+  engine_artifact_schema_version: string | null
+  engine_code_version: string | null
+  model_endpoint_slot: string | null
+  eligibility: string | null
+  evidence_completeness: number | null
+  confirmed_experience_months: number | null
+  warnings: string[]
+  failure_code: string | null
+  failure_message: string | null
+  raw_result_ref: string | null
+  started_at: string | null
+  completed_at: string | null
+  failed_at: string | null
+  created_at: string
+  updated_at: string
+  criterion_results: {
+    id: string
+    criterion_id: string
+    criterion_name: string
+    category: string
+    status: string
+    explanation: string
+    candidate_requirement: string
+    evidence_found: string[]
+    missing_information: string[]
+    ambiguity: string[]
+    verification_needed: string[]
+    matched_terms: string[]
+    unmatched_terms: string[]
+    evidence: ScreeningEvidence[]
+  }[]
+}
+
+export type BulkScreeningBatch = {
+  id: string
+  created_by_id: string
+  source_type: 'EXISTING_JOB' | 'ADHOC_JD'
+  job_id: string | null
+  rubric_version_id: string | null
+  ad_hoc_jd_document_id: string | null
+  ad_hoc_structured_jd: BulkStructuredJd | null
+  ad_hoc_structured_jd_sha256: string | null
+  criteria_snapshot: BulkScreeningCriterionSnapshot[]
+  criteria_confirmed_by_id: string | null
+  criteria_confirmed_at: string | null
+  title: string
+  status: 'DRAFT' | 'READY' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  total_files: number
+  accepted_count: number
+  duplicate_count: number
+  unsupported_count: number
+  completed_count: number
+  failed_count: number
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+  items: BulkScreeningItem[]
+  jd_document: DocumentRead | null
+  job_title: string | null
+}

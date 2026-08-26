@@ -160,6 +160,23 @@ Failure codes are technical categories, not candidate outcomes. Current categori
 
 Redis, worker deployment, Chandra execution, Gemma execution, and model files are not implemented in this repository.
 
+## Bulk Screening Boundary
+
+Bulk Screening is an HR-only queue built for high-volume resume review outside
+the normal one-candidate application workflow. It reuses the approved
+StructuredJD/provider boundary, but it has a stricter public contract:
+
+- no numeric score, percentage, weighted total, maximum score, or ranking in
+  bulk API responses, UI, or CSV exports
+- existing-job batches use the current approved `JobRubricVersion` payload
+  exactly
+- ad-hoc JD batches require HR criteria confirmation before resumes are queued
+- duplicate files are identified by SHA-256 and ignored for worker execution
+- unsupported or technical-failure items are classified as `NEEDS_REVIEW`
+
+See `docs/bulk-screening.md` for format support, ZIP hardening, classification
+rules, and Tyrone validation guidance.
+
 ## Mapper
 
 `EngineEvaluationMapper` accepts `candidate-evaluation-v1` artifacts and persists:

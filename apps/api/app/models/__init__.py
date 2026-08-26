@@ -14,6 +14,17 @@ from app.models.assessment import (
     AssessmentTemplateVersion,
 )
 from app.models.audit import AuditEvent
+from app.models.bulk_screening import (
+    BulkScreeningBatch,
+    BulkScreeningBatchStatus,
+    BulkScreeningClassification,
+    BulkScreeningCriterionResult,
+    BulkScreeningEvidence,
+    BulkScreeningItem,
+    BulkScreeningItemStatus,
+    BulkScreeningSourceType,
+    BulkScreeningWorkItem,
+)
 from app.models.document import Document, DocumentPurpose
 from app.models.followup import ApplicationIntroVideo, InterviewSchedule, InterviewStatus, IntroVideoStatus
 from app.models.organization import Department, School
@@ -63,6 +74,15 @@ __all__ = [
     "AssessmentTemplateStatus",
     "AssessmentTemplateVersion",
     "AuditEvent",
+    "BulkScreeningBatch",
+    "BulkScreeningBatchStatus",
+    "BulkScreeningClassification",
+    "BulkScreeningCriterionResult",
+    "BulkScreeningEvidence",
+    "BulkScreeningItem",
+    "BulkScreeningItemStatus",
+    "BulkScreeningSourceType",
+    "BulkScreeningWorkItem",
     "Candidate",
     "Department",
     "Document",
