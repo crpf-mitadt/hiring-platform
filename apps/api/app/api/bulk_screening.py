@@ -18,6 +18,7 @@ from app.services.bulk_screening import (
     confirm_ad_hoc_criteria,
     create_ad_hoc_jd_batch,
     create_existing_job_batch,
+    discard_draft_batch,
     get_batch,
     list_batches,
     start_batch,
@@ -54,9 +55,6 @@ def api_export_bulk_batch(db: DbDep, actor: ActorDep, batch_id: str):
             "classification",
             "status",
             "concise_reason",
-            "eligibility",
-            "evidence_completeness",
-            "confirmed_experience_months",
             "failure_code",
             "failure_message",
         ]
@@ -69,9 +67,6 @@ def api_export_bulk_batch(db: DbDep, actor: ActorDep, batch_id: str):
                 item.classification.value if item.classification else "",
                 item.status.value,
                 item.concise_reason,
-                item.eligibility,
-                item.evidence_completeness,
-                item.confirmed_experience_months,
                 item.failure_code,
                 item.failure_message,
             ]
@@ -140,3 +135,10 @@ def api_start_bulk_screening_batch(db: DbDep, actor: ActorDep, batch_id: str):
     batch = start_batch(db, actor, batch_id)
     db.commit()
     return batch_to_read(batch)
+
+
+@router.delete("/batches/{batch_id}", status_code=204)
+def api_discard_bulk_screening_batch(db: DbDep, actor: ActorDep, batch_id: str):
+    discard_draft_batch(db, actor, batch_id)
+    db.commit()
+    return Response(status_code=204)

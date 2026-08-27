@@ -52,7 +52,6 @@ Current JD input support:
 Current resume input support:
 
 - `.pdf`
-- `.json`
 
 Current archive support:
 
@@ -64,8 +63,25 @@ include `.doc`, `.rtf`, `.tif`, `.tiff`, `.heic`, `.jpg`, `.jpeg`, `.png`,
 `.docx`, and `.txt`.
 
 The intentionally narrow resume matrix reflects the current production-shaped
-platform provider: PDF resumes can go through OCR and structuring, while JSON
-resumes are treated as already-structured candidate profiles.
+platform provider: PDF resumes can go through OCR, Gemma structuring, and
+deterministic evaluation. Structured JSON resumes remain an integration/test
+capability for controlled validation, but they are not advertised as normal HR
+upload.
+
+## Review Contract
+
+Bulk Screening review is server-authoritative:
+
+1. Create a persisted batch from an existing approved job or ad-hoc JD.
+2. Upload files, folders, or ZIP archives to that batch.
+3. The server validates file formats and ZIP safety, computes SHA-256 hashes,
+   records duplicates/unsupported files, and persists `BulkScreeningItem` rows.
+4. HR reviews the server-returned filenames, statuses, counts, and criteria.
+5. `POST /start` creates work items only for already-persisted unique pending
+   resumes.
+
+The UI must not show Review from browser-only `File` objects. A refresh after
+upload reopens the persisted draft/ready batch.
 
 ## ZIP Security
 
@@ -93,9 +109,10 @@ while preserving the upload audit trail.
 
 ## Async Execution
 
-Creating or updating a batch never runs OCR, Gemma, or scoring inline in the API
-request. Accepted items create `BulkScreeningWorkItem` records. The normal
-long-lived worker loop consumes both application screening jobs and bulk
+Creating or uploading to a batch never runs OCR, Gemma, scoring, or queue
+creation inline in the API request. `POST /start` creates
+`BulkScreeningWorkItem` records for validated unique pending items only. The
+normal long-lived worker loop consumes both application screening jobs and bulk
 screening work items.
 
 `python -m app.worker --once` remains useful for tests and operations, but the
@@ -165,6 +182,7 @@ Bulk Screening records consequential actions:
 - ad-hoc criteria confirmed
 - resumes uploaded
 - screening started
+- unstarted draft discarded
 - item completed
 - item retry pending
 - item failed

@@ -212,11 +212,9 @@ export const api = {
   bulkBatch(batchId: string) {
     return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}`)
   },
-  createExistingJobBulkBatch(jobId: string, files: File[], zipFile: File | null) {
+  createExistingJobBulkBatch(jobId: string) {
     const formData = new FormData()
     formData.append('job_id', jobId)
-    files.forEach((file) => formData.append('files', file))
-    if (zipFile) formData.append('zip_file', zipFile)
     return requestForm<BulkScreeningBatch>('/api/bulk-screening/batches/existing-job', formData)
   },
   createAdHocBulkBatch(jdFile: File) {
@@ -235,5 +233,20 @@ export const api = {
     files.forEach((file) => formData.append('files', file))
     if (zipFile) formData.append('zip_file', zipFile)
     return requestForm<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/resumes`, formData)
+  },
+  startBulkBatch(batchId: string) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/start`, { method: 'POST' })
+  },
+  discardBulkBatch(batchId: string) {
+    return fetch(`${baseUrl}/api/bulk-screening/batches/${batchId}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    }).then((response) => {
+      if (!response.ok) throw new Error(response.statusText || 'Request failed. Please try again.')
+      return true
+    })
+  },
+  bulkExportUrl(batchId: string) {
+    return `${baseUrl}/api/bulk-screening/batches/${batchId}/export.csv`
   }
 }

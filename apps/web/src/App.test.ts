@@ -16,6 +16,9 @@ const apiMock = vi.hoisted(() => ({
   createAdHocBulkBatch: vi.fn(),
   confirmBulkCriteria: vi.fn(),
   addBulkResumes: vi.fn(),
+  startBulkBatch: vi.fn(),
+  discardBulkBatch: vi.fn(),
+  bulkExportUrl: vi.fn(),
   screeningDossier: vi.fn(),
   applicationAccessStatus: vi.fn(),
   applicationAccessAssessment: vi.fn()
@@ -113,12 +116,12 @@ const bulkBatch = {
   criteria_confirmed_at: null,
   title: 'Full Stack - Aug 26',
   status: 'COMPLETED',
-  total_files: 3,
-  accepted_count: 3,
+  total_files: 4,
+  accepted_count: 4,
   duplicate_count: 0,
   unsupported_count: 0,
   completed_count: 3,
-  failed_count: 0,
+  failed_count: 1,
   started_at: '2026-08-26T00:00:00Z',
   completed_at: '2026-08-26T00:10:00Z',
   created_at: '2026-08-26T00:00:00Z',
@@ -134,8 +137,8 @@ const bulkBatch = {
       content_sha256: 'a',
       duplicate_of_item_id: null,
       status: 'COMPLETED',
-      classification: 'MEETS_CRITERIA',
-      concise_reason: 'Required React, Node.js and SQL evidence is present.',
+      classification: 'NEEDS_REVIEW',
+      concise_reason: 'Required React, Node.js and SQL evidence is present but needs HR review.',
       candidate_name: 'Aniket Dhole',
       provider: 'mock',
       provider_engine_version: 'mock-bulk-screening-v1',
@@ -143,7 +146,7 @@ const bulkBatch = {
       engine_artifact_schema_version: 'candidate-evaluation-v1',
       engine_code_version: 'mock',
       model_endpoint_slot: 'mock',
-      eligibility: 'PASS',
+      eligibility: 'REVIEW',
       evidence_completeness: 0.9,
       confirmed_experience_months: 32,
       warnings: [],
@@ -247,6 +250,86 @@ const bulkBatch = {
       created_at: '2026-08-26T00:00:00Z',
       updated_at: '2026-08-26T00:05:00Z',
       criterion_results: []
+    },
+    {
+      id: 'bulk-item-4',
+      batch_id: 'bulk-1',
+      resume_document_id: 'doc-4',
+      original_filename: 'Ambiguous.pdf',
+      content_sha256: 'd',
+      duplicate_of_item_id: null,
+      status: 'COMPLETED',
+      classification: 'NEEDS_REVIEW',
+      concise_reason: 'Evidence is incomplete or ambiguous and requires HR review.',
+      candidate_name: null,
+      provider: 'mock',
+      provider_engine_version: 'mock-bulk-screening-v1',
+      engine_contract_version: 'candidate-evaluation-v1/platform-bulk-mapper-v1',
+      engine_artifact_schema_version: 'candidate-evaluation-v1',
+      engine_code_version: 'mock',
+      model_endpoint_slot: 'mock',
+      eligibility: 'REVIEW',
+      evidence_completeness: 0.5,
+      confirmed_experience_months: null,
+      warnings: ['Ambiguous evidence requires human review.'],
+      failure_code: null,
+      failure_message: null,
+      raw_result_ref: null,
+      started_at: '2026-08-26T00:00:00Z',
+      completed_at: '2026-08-26T00:06:00Z',
+      failed_at: null,
+      created_at: '2026-08-26T00:00:00Z',
+      updated_at: '2026-08-26T00:06:00Z',
+      criterion_results: []
+    }
+  ]
+}
+
+const bulkDraftBatch = {
+  ...bulkBatch,
+  id: 'bulk-draft',
+  title: 'Assistant Professor bulk screening',
+  status: 'READY',
+  total_files: 2,
+  accepted_count: 1,
+  duplicate_count: 1,
+  unsupported_count: 0,
+  completed_count: 0,
+  failed_count: 0,
+  started_at: null,
+  completed_at: null,
+  items: [
+    {
+      ...bulkBatch.items[0],
+      id: 'draft-item-1',
+      batch_id: 'bulk-draft',
+      resume_document_id: 'doc-draft-1',
+      original_filename: 'Vishakha-yawale.pdf',
+      content_sha256: 'same',
+      duplicate_of_item_id: null,
+      status: 'PENDING',
+      classification: null,
+      concise_reason: null,
+      candidate_name: null,
+      provider: null,
+      provider_engine_version: null,
+      criterion_results: []
+    },
+    {
+      ...bulkBatch.items[0],
+      id: 'draft-item-2',
+      batch_id: 'bulk-draft',
+      resume_document_id: null,
+      original_filename: 'Vishakha-yawale-copy.pdf',
+      content_sha256: 'same',
+      duplicate_of_item_id: 'draft-item-1',
+      status: 'DUPLICATE',
+      classification: null,
+      concise_reason: 'Duplicate of Vishakha-yawale.pdf; ignored to avoid repeated OCR/model work.',
+      candidate_name: null,
+      provider: null,
+      provider_engine_version: null,
+      criterion_results: []
     }
   ]
 }
@@ -264,9 +347,11 @@ describe('Hiring Platform product shell', () => {
       shortlisted_for_assessment: 0
     })
     apiMock.listJobs.mockResolvedValue([publishedJob])
-    apiMock.listBulkBatches.mockResolvedValue([bulkBatch])
-    apiMock.bulkBatch.mockResolvedValue(bulkBatch)
-    apiMock.createExistingJobBulkBatch.mockResolvedValue(bulkBatch)
+    apiMock.listBulkBatches.mockResolvedValue([bulkDraftBatch, bulkBatch])
+    apiMock.bulkBatch.mockImplementation((batchId: string) =>
+      Promise.resolve(batchId === 'bulk-draft' ? bulkDraftBatch : bulkBatch)
+    )
+    apiMock.createExistingJobBulkBatch.mockResolvedValue({ ...bulkDraftBatch, total_files: 0, accepted_count: 0, duplicate_count: 0, items: [] })
     apiMock.createAdHocBulkBatch.mockResolvedValue({
       ...bulkBatch,
       source_type: 'ADHOC_JD',
@@ -277,7 +362,10 @@ describe('Hiring Platform product shell', () => {
       items: []
     })
     apiMock.confirmBulkCriteria.mockResolvedValue({ ...bulkBatch, source_type: 'ADHOC_JD', status: 'READY', items: [] })
-    apiMock.addBulkResumes.mockResolvedValue(bulkBatch)
+    apiMock.addBulkResumes.mockResolvedValue(bulkDraftBatch)
+    apiMock.startBulkBatch.mockResolvedValue({ ...bulkDraftBatch, status: 'QUEUED' })
+    apiMock.discardBulkBatch.mockResolvedValue(true)
+    apiMock.bulkExportUrl.mockReturnValue('/api/bulk-screening/batches/bulk-1/export.csv')
     apiMock.listApplications.mockResolvedValue([
       {
         id: 'application-1',
@@ -411,13 +499,65 @@ describe('Hiring Platform product shell', () => {
 
     expect(wrapper.text()).toContain('Bulk screening')
     expect(wrapper.text()).toContain('Full Stack - Aug 26')
+    expect(wrapper.text()).toContain('Total resumes')
+    expect(wrapper.text()).toContain('Meets criteria')
+    expect(wrapper.text()).toContain('Does not meet criteria')
+    expect(wrapper.text()).toContain('Export Results')
     expect(wrapper.text()).toContain('Meets Screening Criteria')
     expect(wrapper.text()).toContain('Does Not Meet Screening Criteria')
     expect(wrapper.text()).toContain('Needs Review')
-    expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present.')
+    expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
     expect(wrapper.text()).toContain('View Evidence')
+    expect(wrapper.text()).not.toContain('Queued resumes')
+    expect(wrapper.text()).not.toContain('Needs attention')
+    expect(wrapper.text()).not.toContain('Start Screening')
     expect(wrapper.text()).not.toContain('Score')
     expect(wrapper.text()).not.toContain('weighted')
     expect(wrapper.text()).not.toContain('90%')
+  })
+
+  it('renders persisted bulk draft review with filenames and duplicate status', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-draft')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Resume Draft')
+    expect(wrapper.text()).toContain('Discard Draft')
+    expect(wrapper.text()).toContain('Files supplied')
+    expect(wrapper.text()).toContain('Ready to screen')
+    expect(wrapper.text()).toContain('Vishakha-yawale.pdf')
+    expect(wrapper.text()).toContain('Vishakha-yawale-copy.pdf')
+    expect(wrapper.text()).toContain('Duplicate of Vishakha-yawale.pdf')
+    expect(wrapper.text()).toContain('Start Screening')
+  })
+
+  it('does not move to bulk review from browser-only file selection', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Create Batch')
+    expect(wrapper.text()).not.toContain('Review before starting')
+    expect(apiMock.addBulkResumes).not.toHaveBeenCalled()
+    expect(apiMock.startBulkBatch).not.toHaveBeenCalled()
   })
 })

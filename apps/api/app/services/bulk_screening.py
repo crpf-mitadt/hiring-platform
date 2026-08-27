@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import zipfile
 from dataclasses import dataclass
@@ -50,9 +51,12 @@ from sqlalchemy.orm import Session
 
 BULK_STAFF_ROLES = {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN}
 SUPPORTED_BULK_JD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
-SUPPORTED_BULK_RESUME_EXTENSIONS = {".pdf", ".json"}
+SUPPORTED_BULK_RESUME_EXTENSIONS = {".pdf"}
+INTEGRATION_BULK_RESUME_EXTENSIONS = {".json"}
 SUPPORTED_BULK_ARCHIVE_EXTENSIONS = {".zip"}
 UNSUPPORTED_AUDITED_EXTENSIONS = {".doc", ".rtf", ".tif", ".tiff", ".heic", ".jpg", ".jpeg", ".png", ".docx", ".txt"}
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -331,9 +335,11 @@ def supported_bulk_formats() -> dict[str, list[str]]:
         "archives": sorted(SUPPORTED_BULK_ARCHIVE_EXTENSIONS),
         "unsupported": sorted(UNSUPPORTED_AUDITED_EXTENSIONS),
         "notes": [
-            "Resume support is limited to PDF and structured JSON because the current platform provider executes "
-            "only those formats end-to-end.",
-            "DOC, RTF, TIFF, HEIC, JPG, JPEG, PNG, DOCX, and TXT resumes are not advertised for bulk screening yet.",
+            "HR-facing resume support is limited to PDF because the current real provider executes PDF resumes "
+            "end-to-end through OCR, Gemma structuring, and deterministic evaluation.",
+            "Structured JSON resumes remain an integration/test capability and are not advertised as normal HR upload.",
+            "DOC, RTF, TIFF, HEIC, JPG, JPEG, PNG, DOCX, and TXT resumes are not advertised for bulk screening until "
+            "the complete real pipeline supports them.",
             "JD upload supports PDF, DOCX, TXT, and MD through the current JD extraction path.",
         ],
     }
@@ -386,8 +392,8 @@ def create_existing_job_batch(
         entity_id=batch.id,
         remarks=f"source=existing_job job={job.id} rubric_version={rubric_version.id}",
     )
-    _ingest_resume_uploads(db, actor, batch, files=files, zip_file=zip_file)
-    start_batch(db, actor, batch.id)
+    if files or zip_file:
+        _ingest_resume_uploads(db, actor, batch, files=files, zip_file=zip_file)
     return batch
 
 
@@ -427,6 +433,7 @@ def confirm_ad_hoc_criteria(db: Session, actor: User, batch_id: str) -> BulkScre
         raise InvalidTransition("Only ad-hoc JD batches require criteria confirmation")
     if not batch.ad_hoc_structured_jd or not batch.criteria_snapshot:
         raise InvalidTransition("Ad-hoc JD criteria are not available")
+    _validate_structured_jd_confirmation(batch.ad_hoc_structured_jd, batch.criteria_snapshot)
     batch.criteria_confirmed_by = actor
     batch.criteria_confirmed_at = utcnow()
     batch.status = BulkScreeningBatchStatus.READY
@@ -450,19 +457,16 @@ def add_resumes_to_batch(
     zip_file: UploadFile | None = None,
 ) -> BulkScreeningBatch:
     batch = get_batch(db, actor, batch_id)
-    if batch.status not in {
-        BulkScreeningBatchStatus.READY,
-        BulkScreeningBatchStatus.QUEUED,
-        BulkScreeningBatchStatus.RUNNING,
-    }:
+    if batch.status != BulkScreeningBatchStatus.READY:
         raise InvalidTransition("Batch must have confirmed screening criteria before resume upload")
     _ingest_resume_uploads(db, actor, batch, files=files, zip_file=zip_file)
-    start_batch(db, actor, batch.id)
     return batch
 
 
 def start_batch(db: Session, actor: User, batch_id: str) -> BulkScreeningBatch:
     batch = get_batch(db, actor, batch_id)
+    if batch.status != BulkScreeningBatchStatus.READY:
+        raise InvalidTransition("Only a reviewed, ready batch can be started")
     if batch.source_type == BulkScreeningSourceType.ADHOC_JD and not batch.criteria_confirmed_at:
         raise InvalidTransition("Confirm ad-hoc JD criteria before screening resumes")
     queueable = [
@@ -470,6 +474,8 @@ def start_batch(db: Session, actor: User, batch_id: str) -> BulkScreeningBatch:
         for item in batch.items
         if item.status == BulkScreeningItemStatus.PENDING and item.resume_document_id and item.work_item is None
     ]
+    if not queueable:
+        raise InvalidTransition("Batch has no validated unique resumes ready to screen")
     for item in queueable:
         db.add(
             BulkScreeningWorkItem(
@@ -478,19 +484,35 @@ def start_batch(db: Session, actor: User, batch_id: str) -> BulkScreeningBatch:
                 max_attempts=get_settings().screening_worker_max_attempts,
             )
         )
-    if queueable:
-        batch.status = BulkScreeningBatchStatus.QUEUED
-        batch.started_at = batch.started_at or utcnow()
-        record_audit(
-            db,
-            actor_id=actor.id,
-            action="bulk_screening.start",
-            entity_type="bulk_screening_batch",
-            entity_id=batch.id,
-            remarks=f"queued_items={len(queueable)}",
-        )
+    batch.status = BulkScreeningBatchStatus.QUEUED
+    batch.started_at = batch.started_at or utcnow()
+    record_audit(
+        db,
+        actor_id=actor.id,
+        action="bulk_screening.start",
+        entity_type="bulk_screening_batch",
+        entity_id=batch.id,
+        remarks=f"queued_items={len(queueable)}",
+    )
     _refresh_batch_counts(batch)
     return batch
+
+
+def discard_draft_batch(db: Session, actor: User, batch_id: str) -> None:
+    batch = get_batch(db, actor, batch_id)
+    if batch.status not in {BulkScreeningBatchStatus.DRAFT, BulkScreeningBatchStatus.READY}:
+        raise InvalidTransition("Only unstarted draft or ready bulk screening batches can be discarded")
+    if any(item.work_item is not None for item in batch.items):
+        raise InvalidTransition("Bulk screening batch has already been queued and cannot be discarded")
+    record_audit(
+        db,
+        actor_id=actor.id,
+        action="bulk_screening.discard_draft",
+        entity_type="bulk_screening_batch",
+        entity_id=batch.id,
+        remarks=f"status={batch.status.value} total_files={batch.total_files}",
+    )
+    db.delete(batch)
 
 
 def process_next_bulk_screening_jobs(
@@ -523,6 +545,7 @@ def process_bulk_screening_job(
     item = job.item
     batch = item.batch
     actor = batch.created_by
+    logger.info("bulk_screening.item_claimed batch_id=%s item_id=%s attempt=%s", batch.id, item.id, job.attempts + 1)
     job.status = BulkScreeningItemStatus.RUNNING
     job.locked_at = utcnow()
     job.started_at = utcnow()
@@ -531,6 +554,7 @@ def process_bulk_screening_job(
     item.started_at = utcnow()
     batch.status = BulkScreeningBatchStatus.RUNNING
     db.flush()
+    logger.info("bulk_screening.item_started batch_id=%s item_id=%s provider=%s", batch.id, item.id, provider.name)
     try:
         result = provider.evaluate(item)
         _apply_bulk_result(item, result)
@@ -545,6 +569,12 @@ def process_bulk_screening_job(
             entity_type="bulk_screening_item",
             entity_id=item.id,
             remarks=f"classification={item.classification}",
+        )
+        logger.info(
+            "bulk_screening.item_completed batch_id=%s item_id=%s classification=%s",
+            batch.id,
+            item.id,
+            item.classification.value if item.classification else None,
         )
     except Exception as error:
         message = _safe_failure_message(error)
@@ -561,6 +591,13 @@ def process_bulk_screening_job(
                 entity_type="bulk_screening_item",
                 entity_id=item.id,
                 remarks=f"{failure_code}: {message}",
+            )
+            logger.warning(
+                "bulk_screening.item_failed_retry_pending batch_id=%s item_id=%s failure_code=%s attempt=%s",
+                batch.id,
+                item.id,
+                failure_code,
+                job.attempts,
             )
         else:
             item.status = BulkScreeningItemStatus.FAILED
@@ -583,7 +620,21 @@ def process_bulk_screening_job(
                 entity_id=item.id,
                 remarks=f"{item.failure_code}: {message}",
             )
+            logger.error(
+                "bulk_screening.item_failed batch_id=%s item_id=%s failure_code=%s",
+                batch.id,
+                item.id,
+                item.failure_code,
+            )
     _refresh_batch_counts(batch)
+    if batch.status in {BulkScreeningBatchStatus.COMPLETED, BulkScreeningBatchStatus.FAILED}:
+        logger.info(
+            "bulk_screening.batch_completed batch_id=%s status=%s completed=%s failed=%s",
+            batch.id,
+            batch.status.value,
+            batch.completed_count,
+            batch.failed_count,
+        )
     return job
 
 
@@ -745,7 +796,7 @@ def _ingest_resume_candidate(
     filename = _display_filename(candidate.original_filename)
     digest = sha256(candidate.data).hexdigest()
     suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_BULK_RESUME_EXTENSIONS:
+    if suffix not in SUPPORTED_BULK_RESUME_EXTENSIONS | INTEGRATION_BULK_RESUME_EXTENSIONS:
         item = BulkScreeningItem(
             batch=batch,
             original_filename=filename,
@@ -862,7 +913,7 @@ def _apply_bulk_result(item: BulkScreeningItem, result: ProviderExecutionResult)
     item.raw_result = payload
     item.classification = _classification_from_payload(payload)
     item.concise_reason = _concise_reason(payload, item.classification)
-    item.candidate_name = _candidate_name_from_payload(payload)
+    item.candidate_name = _candidate_name_from_payload(payload, result.structured_resume_path)
     item.criterion_results = [_bulk_criterion_result(item, entry) for entry in payload.get("criterion_evaluations", [])]
 
 
@@ -939,7 +990,7 @@ def _concise_reason(payload: dict[str, Any], classification: BulkScreeningClassi
     return warning or "Evidence is incomplete or ambiguous and requires HR review."
 
 
-def _candidate_name_from_payload(payload: dict[str, Any]) -> str | None:
+def _candidate_name_from_payload(payload: dict[str, Any], structured_resume_path: Path | None = None) -> str | None:
     profile = payload.get("candidate_profile") or payload.get("candidate") or {}
     for key in ("full_name", "name", "candidate_name"):
         value = profile.get(key)
@@ -950,7 +1001,51 @@ def _candidate_name_from_payload(payload: dict[str, Any]) -> str | None:
         value = scoring_safe.get("display_name")
         if isinstance(value, str) and value.strip():
             return value.strip()
+    if structured_resume_path is not None and structured_resume_path.is_file():
+        try:
+            structured_resume = json.loads(structured_resume_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            structured_resume = {}
+        personal = structured_resume.get("personal_information") if isinstance(structured_resume, dict) else None
+        if isinstance(personal, dict):
+            for key in ("full_name", "name", "candidate_name"):
+                value = personal.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
     return None
+
+
+def _validate_structured_jd_confirmation(structured_jd: dict[str, Any], criteria: list[dict[str, Any]]) -> None:
+    warnings = [
+        str(warning).lower()
+        for key in ("warnings", "extraction_warnings")
+        for warning in structured_jd.get(key, [])
+    ]
+    blocking_phrases = (
+        "not linked to any scoring criterion",
+        "unsupported generic",
+        "preferred requirement marked mandatory",
+    )
+    for warning in warnings:
+        if any(phrase in warning for phrase in blocking_phrases):
+            raise InvalidTransition("Ad-hoc JD criteria contain unresolved grounding warnings")
+
+    mandatory_requirements = [
+        requirement.get("requirement_id") or requirement.get("id")
+        for requirement in structured_jd.get("mandatory_requirements", [])
+        if isinstance(requirement, dict) and (requirement.get("requirement_id") or requirement.get("id"))
+    ]
+    if not mandatory_requirements:
+        return
+    linked = {
+        requirement_id
+        for criterion in criteria
+        if criterion.get("mandatory") is True
+        for requirement_id in criterion.get("requirement_ids", [])
+    }
+    missing = [requirement_id for requirement_id in mandatory_requirements if requirement_id not in linked]
+    if missing:
+        raise InvalidTransition("Ad-hoc JD mandatory requirements must be linked to mandatory screening criteria")
 
 
 def _refresh_batch_counts(batch: BulkScreeningBatch) -> None:

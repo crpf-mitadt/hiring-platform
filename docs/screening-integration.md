@@ -171,6 +171,9 @@ StructuredJD/provider boundary, but it has a stricter public contract:
 - existing-job batches use the current approved `JobRubricVersion` payload
   exactly
 - ad-hoc JD batches require HR criteria confirmation before resumes are queued
+- resume upload happens before Review and persists server-side item status,
+  hashes, duplicate links, and unsupported-file records
+- `POST /start` is the only product path that creates bulk work items
 - duplicate files are identified by SHA-256 and ignored for worker execution
 - unsupported or technical-failure items are classified as `NEEDS_REVIEW`
 

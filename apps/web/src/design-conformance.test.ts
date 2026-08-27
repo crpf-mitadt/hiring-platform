@@ -69,4 +69,30 @@ describe('Frappe UI design conformance', () => {
     expect(app).toContain("from 'frappe-ui/list'")
     expect(statusBadge).toContain("import { Badge } from 'frappe-ui'")
   })
+
+  it('keeps bulk screening review server-backed and score-free', () => {
+    const app = read('App.vue')
+    const client = read('api/client.ts')
+
+    expect(app).toContain('Upload & Review')
+    expect(app).toContain('uploadBulkResumesForReview')
+    expect(app).toContain('api.startBulkBatch')
+    expect(app).toContain('Export Results')
+    expect(app).toContain('Discard Draft')
+    expect(app).not.toContain('Queued resumes')
+    expect(app).not.toContain('Needs attention')
+    expect(client).toContain('/api/bulk-screening/batches/${batchId}/start')
+    expect(client).toContain('/api/bulk-screening/batches/${batchId}/export.csv')
+  })
+
+  it('hides unavoidable native file inputs behind Frappe-styled controls', () => {
+    const app = read('App.vue')
+    const rawFileControls = app.match(/<input[^>]+type="file"[^>]+>/g) ?? []
+
+    expect(rawFileControls.length).toBeGreaterThan(0)
+    for (const control of rawFileControls) {
+      expect(control).not.toContain('block w-full rounded')
+      expect(control).toMatch(/class="[^"]*(sr-only|hidden)/)
+    }
+  })
 })
