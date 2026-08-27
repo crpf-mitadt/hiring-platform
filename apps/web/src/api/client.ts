@@ -13,7 +13,17 @@ import type {
   User
 } from './types'
 
-const baseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
+type ApiClientEnv = {
+  MODE?: string
+  VITE_API_BASE_URL?: string
+}
+
+export function resolveApiBaseUrl(env: ApiClientEnv = import.meta.env) {
+  if (env.MODE === 'test') return ''
+  return env.VITE_API_BASE_URL ?? ''
+}
+
+const baseUrl = resolveApiBaseUrl()
 
 type RequestOptions = {
   method?: string

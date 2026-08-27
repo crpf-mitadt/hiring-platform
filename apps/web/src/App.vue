@@ -947,7 +947,10 @@ function bulkDuplicateSource(item: BulkScreeningItem) {
 function applicationStatusLabel(value: unknown, fallback = 'Pending') {
   if (value === null || value === undefined || value === '') return fallback
   if (typeof value === 'number') return String(value)
-  if (typeof value === 'string') return stageLabel(value)
+  if (typeof value === 'string') {
+    const normalized = value.replaceAll('_', ' ').trim().toLowerCase()
+    return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : fallback
+  }
   return fallback
 }
 
@@ -1247,7 +1250,7 @@ onBeforeUnmount(() => {
           <List :columns="['minmax(0,1fr)', '12rem']">
             <ListRow v-for="row in applicationStatus.progress" :key="row.label" :value="row.label">
               <ListCell>{{ row.label }}</ListCell>
-              <ListCell><StatusBadge :value="row.status" /></ListCell>
+              <ListCell><StatusBadge :value="applicationStatusLabel(row.status)" /></ListCell>
             </ListRow>
           </List>
           <section v-if="continuationAssessment" class="space-y-4">
@@ -1282,7 +1285,10 @@ onBeforeUnmount(() => {
             <Alert v-if="continuationAssessment.status === 'SUBMITTED'" title="Assessment submitted" theme="green" />
           </section>
           <section class="space-y-3">
-            <h2 class="text-lg-semibold text-ink-gray-8">Introduction video</h2>
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 class="text-lg-semibold text-ink-gray-8">Introduction video</h2>
+              <StatusBadge :value="applicationStatusLabel(applicationStatus.intro_video?.status, 'Not requested')" />
+            </div>
             <Alert v-if="applicationStatus.intro_video?.status === 'UPLOADED'" title="Introduction video uploaded" theme="green" />
             <Alert v-else-if="applicationStatus.intro_video?.status === 'SKIPPED'" title="Introduction video skipped" theme="gray" />
             <div v-else class="flex flex-wrap items-end gap-3">
@@ -1835,21 +1841,34 @@ onBeforeUnmount(() => {
             </div>
             <section class="space-y-3">
               <h3 class="text-lg-semibold text-ink-gray-8">Criteria and evidence</h3>
-              <List v-if="latestScreening?.criterion_results.length" :columns="['minmax(0,1fr)', '9rem']">
-                <ListRow v-for="criterion in latestScreening.criterion_results" :key="criterion.id" :value="criterion.id">
-                  <ListCell>
-                    <div>
-                      <div class="text-base-medium text-ink-gray-8">{{ criterion.criterion_name }}</div>
-                      <p class="mt-1 text-p-sm text-ink-gray-6">{{ criterion.explanation }}</p>
-                      <details v-for="evidence in criterion.evidence" :key="evidence.id" class="mt-2 rounded border border-outline-gray-1 bg-surface-gray-1 p-2">
-                        <summary class="text-sm text-ink-gray-7">{{ evidence.source_type }} · {{ evidence.evidence_status }}</summary>
-                        <p class="mt-2 text-p-sm text-ink-gray-7">{{ evidence.exact_text }}</p>
-                      </details>
+              <section v-if="latestScreening?.criterion_results.length" class="space-y-6">
+                <section
+                  v-for="criterion in latestScreening.criterion_results"
+                  :key="criterion.id"
+                  class="space-y-3 border-t border-outline-gray-1 pt-5 first:border-t-0 first:pt-0"
+                >
+                  <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div class="min-w-0 space-y-1">
+                      <div class="text-base-medium leading-5 text-ink-gray-8">{{ criterion.criterion_name }}</div>
+                      <p class="text-p-sm leading-5 text-ink-gray-6">{{ criterion.explanation }}</p>
                     </div>
-                  </ListCell>
-                  <ListCell><StatusBadge :value="criterion.status" /></ListCell>
-                </ListRow>
-              </List>
+                    <StatusBadge :value="criterion.status" class="self-start" />
+                  </div>
+                  <div v-if="criterion.evidence.length" class="space-y-2">
+                    <details
+                      v-for="evidence in criterion.evidence"
+                      :key="evidence.id"
+                      class="rounded border border-outline-gray-1 bg-surface-gray-1 p-3"
+                    >
+                      <summary class="cursor-pointer text-sm leading-5 text-ink-gray-7">
+                        {{ evidence.source_type }} · {{ applicationStatusLabel(evidence.evidence_status, 'Evidence') }}
+                      </summary>
+                      <p class="mt-2 text-p-sm leading-5 text-ink-gray-7">{{ evidence.exact_text }}</p>
+                    </details>
+                  </div>
+                  <Alert v-else title="No evidence snippets recorded for this criterion" theme="gray" />
+                </section>
+              </section>
               <Alert v-else title="No screening evidence yet" theme="gray" />
             </section>
           </section>
@@ -1916,7 +1935,7 @@ onBeforeUnmount(() => {
                 <h3 class="text-lg-semibold leading-6 text-ink-gray-8">{{ criterion.criterion_name }}</h3>
                 <p class="text-p-sm leading-5 text-ink-gray-6">{{ criterion.explanation }}</p>
               </div>
-              <StatusBadge :value="criterion.status" />
+              <StatusBadge :value="criterion.status" class="self-start" />
             </div>
             <div class="grid gap-3 sm:grid-cols-2">
               <div v-if="criterion.matched_terms.length" class="space-y-1">

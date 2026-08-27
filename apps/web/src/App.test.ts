@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
 
 const apiMock = vi.hoisted(() => ({
   me: vi.fn(),
@@ -162,17 +163,19 @@ const bulkBatch = {
         {
           id: 'crit-1',
           criterion_id: 'required',
-          criterion_name: 'Required skills evidence',
+          criterion_name: 'Required full-stack engineering experience with React, Node.js, SQL, deployment ownership and maintainable production delivery',
           category: 'skill',
           status: 'met',
-          explanation: 'Evidence is present.',
-          candidate_requirement: 'Required skills evidence',
-          evidence_found: ['React'],
-          missing_information: [],
+          explanation:
+            'The resume contains several pieces of direct evidence, but the reviewer still needs to confirm whether the production ownership was independent or team-based.',
+          candidate_requirement:
+            'Required full-stack engineering experience with React, Node.js, SQL and production deployment ownership.',
+          evidence_found: ['React applications', 'Node.js APIs', 'SQL reporting'],
+          missing_information: ['Exact scale of production traffic is not stated'],
           ambiguity: [],
-          verification_needed: [],
-          matched_terms: ['React', 'Node.js', 'SQL'],
-          unmatched_terms: [],
+          verification_needed: ['Confirm independent ownership of release planning'],
+          matched_terms: ['React', 'Node.js', 'SQL', 'CI/CD', 'production deployment'],
+          unmatched_terms: ['Kubernetes ownership'],
           evidence: [
             {
               id: 'evidence-1',
@@ -180,9 +183,124 @@ const bulkBatch = {
               source_document_id: 'doc-1',
               page_number: 1,
               block_index: 0,
-              exact_text: 'Built React and Node.js systems with SQL.',
+              exact_text:
+                'Built React and Node.js systems with SQL-backed reporting, release checklists, and production support for university admissions workflows across multiple intake cycles.',
               normalized_text: null,
               evidence_status: 'supported',
+              notes: null
+            },
+            {
+              id: 'evidence-2',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 2,
+              block_index: 4,
+              exact_text:
+                'Maintained deployment notes, resolved production incidents, and coordinated fixes with QA and student support staff during peak application windows.',
+              normalized_text: null,
+              evidence_status: 'supported',
+              notes: null
+            }
+          ]
+        },
+        {
+          id: 'crit-2',
+          criterion_id: 'preferred',
+          criterion_name: 'Preferred evidence of academic-domain workflow understanding and reviewer-facing administrative tooling',
+          category: 'experience',
+          status: 'partial',
+          explanation:
+            'The resume describes administrative tooling and reviewer workflows, but the academic-domain context is implied rather than explicitly named in every project.',
+          candidate_requirement: 'Preferred experience building workflows for academic departments, reviewers, or admissions teams.',
+          evidence_found: ['Reviewer queue', 'Admissions workflow'],
+          missing_information: ['Department reviewer workflow is not described in detail'],
+          ambiguity: ['Academic context appears in project names but not every responsibility line'],
+          verification_needed: ['Ask whether reviewer queues were used by faculty or operations staff'],
+          matched_terms: ['reviewer queue', 'admissions', 'workflow automation'],
+          unmatched_terms: ['faculty panel notes'],
+          evidence: [
+            {
+              id: 'evidence-3',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 2,
+              block_index: 8,
+              exact_text:
+                'Created an admissions reviewer queue with filterable statuses, document review actions, and audit notes for operational staff.',
+              normalized_text: null,
+              evidence_status: 'supported',
+              notes: null
+            },
+            {
+              id: 'evidence-4',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 3,
+              block_index: 2,
+              exact_text:
+                'Partnered with academic coordinators to tune application workflow fields, candidate communications, and deadline reporting.',
+              normalized_text: null,
+              evidence_status: 'supported',
+              notes: null
+            }
+          ]
+        },
+        {
+          id: 'crit-3',
+          criterion_id: 'adjacent',
+          criterion_name: 'Adjacent evidence for background processing, retry-safe queues, and non-blocking model or document processing',
+          category: 'operations',
+          status: 'met',
+          explanation:
+            'The resume shows queue-based processing and retry handling. This is relevant to screening operations even though it was not described as AI model execution.',
+          candidate_requirement: 'Adjacent experience with long-running processing, retries, and background work.',
+          evidence_found: ['Queue processing', 'Retry handling', 'Operational monitoring'],
+          missing_information: [],
+          ambiguity: [],
+          verification_needed: ['Confirm queue depth and worker deployment approach'],
+          matched_terms: ['background worker', 'retry', 'idempotency', 'queue'],
+          unmatched_terms: ['GPU worker'],
+          evidence: [
+            {
+              id: 'evidence-5',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 4,
+              block_index: 1,
+              exact_text:
+                'Implemented background workers for document ingestion with retry-safe task records, status persistence, and operator-visible failure messages.',
+              normalized_text: null,
+              evidence_status: 'supported',
+              notes: null
+            }
+          ]
+        },
+        {
+          id: 'crit-4',
+          criterion_id: 'gap',
+          criterion_name: 'Required evidence for Python FastAPI and SQLAlchemy service ownership across validation, testing and migrations',
+          category: 'skill',
+          status: 'not_met',
+          explanation:
+            'The resume mentions Python services but does not clearly establish FastAPI, SQLAlchemy, Alembic migrations, or backend ownership across the full delivery lifecycle.',
+          candidate_requirement: 'Required backend ownership with Python FastAPI, SQLAlchemy, Alembic and automated tests.',
+          evidence_found: ['Python service support'],
+          missing_information: ['FastAPI', 'SQLAlchemy', 'Alembic migrations', 'API test ownership'],
+          ambiguity: ['Python may have been scripting rather than service development'],
+          verification_needed: ['Ask for a backend project walkthrough'],
+          matched_terms: ['Python'],
+          unmatched_terms: ['FastAPI', 'SQLAlchemy', 'Alembic', 'pytest'],
+          evidence: [
+            {
+              id: 'evidence-6',
+              source_type: 'resume',
+              source_document_id: 'doc-1',
+              page_number: 5,
+              block_index: 3,
+              exact_text:
+                'Used Python scripts for data cleanup, report generation, and one-off reconciliation tasks during migration windows.',
+              normalized_text: null,
+              evidence_status: 'weak',
               notes: null
             }
           ]
@@ -395,10 +513,10 @@ describe('Hiring Platform product shell', () => {
         screening_score: 74,
         screening_eligibility: 'REVIEW',
         evidence_completeness: 0.82,
-        assessment_status: 'SUBMITTED',
-        assessment_score: 80,
+        assessment_status: 'ASSIGNED',
+        assessment_score: null,
         assessment_completed_at: '2026-08-24T00:00:00Z',
-        intro_video_status: 'UPLOADED',
+        intro_video_status: 'NOT_UPLOADED',
         interview_status: 'NOT_SCHEDULED'
       }
     ])
@@ -409,9 +527,19 @@ describe('Hiring Platform product shell', () => {
       stage_history: [],
       decisions: [],
       application: null,
-      assessment: null,
-      intro_video: null,
-      interview: null
+      assessment: {
+        id: 'assessment-1',
+        application_id: 'application-1',
+        status: 'ASSIGNED',
+        assigned_at: '2026-08-24T00:00:00Z',
+        title: 'Faculty screening assessment',
+        instructions: 'Complete the assessment when invited.',
+        duration_minutes: 45,
+        attempt: null,
+        result: null
+      },
+      intro_video: { status: 'NOT_UPLOADED' },
+      interview: { status: 'NOT_SCHEDULED' }
     })
     apiMock.applicationAccessStatus.mockResolvedValue({
       id: 'application-1',
@@ -456,7 +584,13 @@ describe('Hiring Platform product shell', () => {
 
     expect(wrapper.text()).toContain('Application received')
     expect(wrapper.text()).toContain('Application submitted')
-    expect(wrapper.text()).toContain('Under Review')
+    expect(wrapper.text()).toContain('Under review')
+    expect(wrapper.text()).toContain('Assigned')
+    expect(wrapper.text()).toContain('Not uploaded')
+    expect(wrapper.text()).toContain('Interview not scheduled')
+    expect(wrapper.text()).not.toContain('ASSIGNED')
+    expect(wrapper.text()).not.toContain('NOT_UPLOADED')
+    expect(wrapper.text()).not.toContain('NOT_SCHEDULED')
     expect(wrapper.text()).not.toContain('Candidate Portal')
     expect(wrapper.text()).not.toContain('My applications')
     expect(wrapper.text()).not.toContain('Evidence completeness')
@@ -482,6 +616,27 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('X-Actor-Id')
     expect(wrapper.text()).not.toContain('Run Worker Once')
     expect(wrapper.text()).not.toContain('Queue Screening')
+  })
+
+  it('humanizes raw application statuses in the staff application work queue', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/applications')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Assigned')
+    expect(wrapper.text()).toContain('Not uploaded')
+    expect(wrapper.text()).toContain('Not scheduled')
+    expect(wrapper.text()).not.toContain('ASSIGNED')
+    expect(wrapper.text()).not.toContain('NOT_UPLOADED')
+    expect(wrapper.text()).not.toContain('NOT_SCHEDULED')
   })
 
   it('renders bulk screening history and score-free result lanes', async () => {
@@ -514,6 +669,46 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Score')
     expect(wrapper.text()).not.toContain('weighted')
     expect(wrapper.text()).not.toContain('90%')
+  })
+
+  it('renders long bulk evidence in natural sections without fixed-height list rows', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((button) => button.text() === 'View Evidence')[1]
+      ?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(
+      'Required full-stack engineering experience with React, Node.js, SQL, deployment ownership and maintainable production delivery'
+    )
+    expect(wrapper.text()).toContain('Preferred evidence of academic-domain workflow understanding')
+    expect(wrapper.text()).toContain('Adjacent evidence for background processing, retry-safe queues')
+    expect(wrapper.text()).toContain('Required evidence for Python FastAPI and SQLAlchemy service ownership')
+    expect(wrapper.text()).toContain('production support for university admissions workflows across multiple intake cycles')
+    expect(wrapper.text()).toContain('FastAPI, SQLAlchemy, Alembic, pytest')
+  })
+
+  it('keeps the bulk evidence dialog out of the fixed-height List layout path', () => {
+    const source = readFileSync('src/App.vue', 'utf8')
+    const dialogSource = source.slice(source.indexOf('<Dialog'), source.indexOf('</Dialog>'))
+
+    expect(dialogSource).toContain('selectedBulkEvidenceItem.criterion_results')
+    expect(dialogSource).toContain('max-h-[72vh]')
+    expect(dialogSource).toContain('overflow-y-auto')
+    expect(dialogSource).not.toContain('<List')
+    expect(dialogSource).not.toContain('row-height')
   })
 
   it('renders persisted bulk draft review with filenames and duplicate status', async () => {

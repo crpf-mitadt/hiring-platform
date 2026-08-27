@@ -13,7 +13,10 @@ const theme = computed(() => {
   return 'gray'
 })
 
-const label = computed(() => props.value.replaceAll('_', ' '))
+const label = computed(() => {
+  const normalized = props.value.replaceAll('_', ' ').trim().toLowerCase()
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : props.value
+})
 </script>
 
 <template>
