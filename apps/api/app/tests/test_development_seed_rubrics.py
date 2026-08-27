@@ -106,6 +106,13 @@ def _payload_text(payload: dict) -> str:
     return json.dumps(values, sort_keys=True).lower()
 
 
+def test_demo_rubric_provider_marker_fits_model_constraint():
+    proposed_by_column = JobRubricVersion.__table__.columns["proposed_by"]
+
+    assert proposed_by_column.type.length == 30
+    assert len(seed.DEMO_RUBRIC_PROVIDER) <= proposed_by_column.type.length
+
+
 def test_full_stack_seed_payload_matches_current_vacancy_without_faculty_contamination(
     monkeypatch,
     db_session,

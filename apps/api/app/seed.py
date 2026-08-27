@@ -55,7 +55,7 @@ from app.services.rubric_utils import rubric_payload_hash
 
 DEMO_MARKER = "DEVELOPMENT / DEMO MANUAL APPROVED RUBRIC"
 DEMO_STRUCTURED_JD_REVISION = "mit-adt-demo-structured-jd-v2"
-DEMO_RUBRIC_PROVIDER = "development-seed-manual-approved"
+DEMO_RUBRIC_PROVIDER = "development-seed-approved"
 
 VACANCIES = [
     {
