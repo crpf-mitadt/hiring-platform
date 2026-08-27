@@ -85,6 +85,33 @@ describe('Frappe UI design conformance', () => {
     expect(client).toContain('/api/bulk-screening/batches/${batchId}/export.csv')
   })
 
+  it('keeps bulk evidence dialog in normal vertical flow', () => {
+    const app = read('App.vue')
+    const dialogSource = app.slice(app.indexOf(':title="selectedBulkEvidenceItem'), app.indexOf('</Dialog>'))
+
+    expect(dialogSource).toContain('max-h-[72vh]')
+    expect(dialogSource).toContain('overflow-y-auto')
+    expect(dialogSource).toContain("class=\"space-y-8\"")
+    expect(dialogSource).not.toContain('<List')
+    expect(dialogSource).not.toContain('absolute')
+  })
+
+  it('keeps staff shell and bulk title hierarchy clean', () => {
+    const app = read('App.vue')
+
+    expect(app).toContain('class="flex h-screen flex-col border-r border-outline-gray-1"')
+    expect(app).not.toContain('text-xl font-semibold text-ink-gray-8">Bulk Screening')
+    expect(app).toContain("route === 'staffBulkScreening' && !showBulkComposer")
+  })
+
+  it('maps user-facing application statuses instead of rendering raw API enums', () => {
+    const app = read('App.vue')
+
+    expect(app).toContain('applicationStatusLabel(application.assessment_status')
+    expect(app).toContain('applicationStatusLabel(application.intro_video_status')
+    expect(app).toContain('applicationStatusLabel(application.interview_status')
+  })
+
   it('hides unavoidable native file inputs behind Frappe-styled controls', () => {
     const app = read('App.vue')
     const rawFileControls = app.match(/<input[^>]+type="file"[^>]+>/g) ?? []
