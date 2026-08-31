@@ -92,6 +92,8 @@ describe('Frappe UI design conformance', () => {
     expect(dialogSource).toContain('max-h-[72vh]')
     expect(dialogSource).toContain('overflow-y-auto')
     expect(dialogSource).toContain("class=\"space-y-8\"")
+    expect(dialogSource).toContain('View {{ criterion.evidence.length }} evidence detail')
+    expect(dialogSource).toContain('Transferable / adjacent signal')
     expect(dialogSource).not.toContain('<List')
     expect(dialogSource).not.toContain('absolute')
   })
@@ -99,9 +101,14 @@ describe('Frappe UI design conformance', () => {
   it('keeps staff shell and bulk title hierarchy clean', () => {
     const app = read('App.vue')
 
-    expect(app).toContain('class="flex h-screen flex-col border-r border-outline-gray-1"')
+    expect(app).toContain('<main class="h-screen overflow-hidden bg-surface-base text-ink-gray-9">')
+    expect(app).toContain('<Sidebar width="16rem" disable-collapse class="flex h-full flex-col border-r border-outline-gray-1">')
+    expect(app).toContain('class="flex-1 space-y-1 overflow-y-auto px-3 pb-4 pt-5"')
+    expect(app).toContain('<Divider flex-item class="mx-3" />')
     expect(app).not.toContain('text-xl font-semibold text-ink-gray-8">Bulk Screening')
-    expect(app).toContain("route === 'staffBulkScreening' && !showBulkComposer")
+    expect(app).toContain("route === 'staffBulkScreening' && !routeBulkBatchId")
+    expect(app).toContain("route === 'staffBulkScreeningNew'")
+    expect(app).toContain("route === 'staffBulkScreening' && selectedBulkBatch && routeBulkBatchId")
   })
 
   it('maps user-facing application statuses instead of rendering raw API enums', () => {

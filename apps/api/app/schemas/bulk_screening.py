@@ -48,6 +48,7 @@ class BulkScreeningCriterionResultRead(ApiModel):
     verification_needed: list[str]
     matched_terms: list[str]
     unmatched_terms: list[str]
+    raw_component_assessment: dict
     evidence: list[BulkScreeningEvidenceRead]
 
 

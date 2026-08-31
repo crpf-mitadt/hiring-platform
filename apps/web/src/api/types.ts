@@ -343,6 +343,7 @@ export type BulkScreeningItem = {
     verification_needed: string[]
     matched_terms: string[]
     unmatched_terms: string[]
+    raw_component_assessment: Record<string, unknown>
     evidence: ScreeningEvidence[]
   }[]
 }

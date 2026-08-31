@@ -176,6 +176,10 @@ const bulkBatch = {
           verification_needed: ['Confirm independent ownership of release planning'],
           matched_terms: ['React', 'Node.js', 'SQL', 'CI/CD', 'production deployment'],
           unmatched_terms: ['Kubernetes ownership'],
+          raw_component_assessment: {
+            supported_core_components: ['React', 'Node.js', 'SQL'],
+            missing_core_components: ['Kubernetes ownership']
+          },
           evidence: [
             {
               id: 'evidence-1',
@@ -218,6 +222,10 @@ const bulkBatch = {
           verification_needed: ['Ask whether reviewer queues were used by faculty or operations staff'],
           matched_terms: ['reviewer queue', 'admissions', 'workflow automation'],
           unmatched_terms: ['faculty panel notes'],
+          raw_component_assessment: {
+            supported_preferred_components: ['reviewer queue', 'admissions workflow'],
+            missing_preferred_components: ['faculty panel notes']
+          },
           evidence: [
             {
               id: 'evidence-3',
@@ -260,6 +268,10 @@ const bulkBatch = {
           verification_needed: ['Confirm queue depth and worker deployment approach'],
           matched_terms: ['background worker', 'retry', 'idempotency', 'queue'],
           unmatched_terms: ['GPU worker'],
+          raw_component_assessment: {
+            supported_adjacent_components: ['background worker', 'retry-safe queue'],
+            missing_evaluation_dimensions: ['worker deployment scale']
+          },
           evidence: [
             {
               id: 'evidence-5',
@@ -290,6 +302,11 @@ const bulkBatch = {
           verification_needed: ['Ask for a backend project walkthrough'],
           matched_terms: ['Python'],
           unmatched_terms: ['FastAPI', 'SQLAlchemy', 'Alembic', 'pytest'],
+          raw_component_assessment: {
+            supported_adjacent_components: ['Python scripting'],
+            missing_core_components: ['FastAPI', 'SQLAlchemy', 'Alembic', 'pytest'],
+            missing_evaluation_dimensions: ['backend ownership across validation and migrations']
+          },
           evidence: [
             {
               id: 'evidence-6',
@@ -316,7 +333,7 @@ const bulkBatch = {
       duplicate_of_item_id: null,
       status: 'COMPLETED',
       classification: 'DOES_NOT_MEET_CRITERIA',
-      concise_reason: 'No sufficient evidence was found for Laravel.',
+      concise_reason: 'Verified hard-gate evidence indicates the candidate is below minimum experience.',
       candidate_name: 'Rahul Sharma',
       provider: 'mock',
       provider_engine_version: 'mock-bulk-screening-v1',
@@ -639,7 +656,30 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('NOT_SCHEDULED')
   })
 
-  it('renders bulk screening history and score-free result lanes', async () => {
+  it('renders bulk screening history without inline composer or selected result detail', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Bulk screening')
+    expect(wrapper.text()).toContain('Full Stack - Aug 26')
+    expect(wrapper.text()).toContain('Resume Draft')
+    expect(wrapper.text()).toContain('New Screening')
+    expect(wrapper.text()).not.toContain('Total resumes')
+    expect(wrapper.text()).not.toContain('Export Results')
+    expect(wrapper.text()).not.toContain('Create Batch')
+    expect(wrapper.text()).not.toContain('Start Screening')
+  })
+
+  it('renders bulk screening detail as a dedicated score-free result view', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -652,17 +692,16 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Bulk screening')
-    expect(wrapper.text()).toContain('Full Stack - Aug 26')
     expect(wrapper.text()).toContain('Total resumes')
-    expect(wrapper.text()).toContain('Meets criteria')
-    expect(wrapper.text()).toContain('Does not meet criteria')
-    expect(wrapper.text()).toContain('Export Results')
     expect(wrapper.text()).toContain('Meets Screening Criteria')
     expect(wrapper.text()).toContain('Does Not Meet Screening Criteria')
     expect(wrapper.text()).toContain('Needs Review')
     expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
+    expect(wrapper.text()).toContain('Export Results')
     expect(wrapper.text()).toContain('View Evidence')
+    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+    expect(wrapper.text()).not.toContain('Resume Draft')
+    expect(wrapper.text()).not.toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Queued resumes')
     expect(wrapper.text()).not.toContain('Needs attention')
     expect(wrapper.text()).not.toContain('Start Screening')
@@ -671,7 +710,26 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('90%')
   })
 
-  it('renders long bulk evidence in natural sections without fixed-height list rows', async () => {
+  it('renders new bulk screening workflow on its own route', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/new')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('New screening batch')
+    expect(wrapper.text()).toContain('Create Batch')
+    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+    expect(wrapper.text()).not.toContain('Total resumes')
+  })
+
+  it('renders long bulk evidence as compact summaries with provenance behind one disclosure per criterion', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -693,11 +751,32 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).toContain(
       'Required full-stack engineering experience with React, Node.js, SQL, deployment ownership and maintainable production delivery'
     )
-    expect(wrapper.text()).toContain('Preferred evidence of academic-domain workflow understanding')
-    expect(wrapper.text()).toContain('Adjacent evidence for background processing, retry-safe queues')
-    expect(wrapper.text()).toContain('Required evidence for Python FastAPI and SQLAlchemy service ownership')
-    expect(wrapper.text()).toContain('production support for university admissions workflows across multiple intake cycles')
-    expect(wrapper.text()).toContain('FastAPI, SQLAlchemy, Alembic, pytest')
+    expect(wrapper.text()).toContain('Evidence found')
+    expect(wrapper.text()).toContain('Not demonstrated / follow-up')
+    expect(wrapper.text()).toContain('Transferable / adjacent signal')
+    expect(wrapper.text()).toContain('View 2 evidence details')
+    expect(wrapper.text()).toContain('Python scripting')
+    expect(wrapper.text()).toContain('backend ownership across validation and migrations')
+    expect(wrapper.text()).not.toContain('Matched evidence')
+    expect(wrapper.text()).not.toContain('Gaps')
+    expect(wrapper.text()).not.toContain('No sufficient evidence')
+  })
+
+  it('does not duplicate the filename when a bulk item has no candidate name', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text.match(/Ambiguous.pdf/g)?.length).toBe(1)
   })
 
   it('keeps the bulk evidence dialog out of the fixed-height List layout path', () => {
@@ -718,13 +797,18 @@ describe('Hiring Platform product shell', () => {
       full_name: 'Recruiter User',
       roles: ['hr_recruiter']
     })
-    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-draft')
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
     expect(wrapper.text()).toContain('Resume Draft')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Resume Draft')?.trigger('click')
+    await flushPromises()
+
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening/new')
     expect(wrapper.text()).toContain('Discard Draft')
     expect(wrapper.text()).toContain('Files supplied')
     expect(wrapper.text()).toContain('Ready to screen')
@@ -750,6 +834,7 @@ describe('Hiring Platform product shell', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
     await flushPromises()
 
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening/new')
     expect(wrapper.text()).toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Review before starting')
     expect(apiMock.addBulkResumes).not.toHaveBeenCalled()

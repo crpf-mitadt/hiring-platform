@@ -275,7 +275,8 @@ def test_bulk_screening_processes_pass_fail_review_and_technical_failure(
     body = refreshed.json()
     by_file = {item["original_filename"]: item for item in body["items"]}
     assert by_file["meets.pdf"]["classification"] == "MEETS_CRITERIA"
-    assert by_file["missing.pdf"]["classification"] == "DOES_NOT_MEET_CRITERIA"
+    assert by_file["missing.pdf"]["classification"] == "NEEDS_REVIEW"
+    assert "not demonstrated" in by_file["missing.pdf"]["concise_reason"].lower()
     assert by_file["review.pdf"]["classification"] == "NEEDS_REVIEW"
     assert by_file["technical.pdf"]["classification"] == "NEEDS_REVIEW"
     assert by_file["technical.pdf"]["status"] == "FAILED"
@@ -509,3 +510,132 @@ def test_bulk_screening_candidate_name_maps_from_structured_resume_path(
 
     item = db_session.scalar(select(BulkScreeningItem))
     assert item.candidate_name == "Synthetic Candidate"
+
+
+def test_bulk_screening_missing_resume_evidence_stays_needs_review(
+    client,
+    db_session,
+    users,
+    published_job,
+):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(client, users["recruiter"]["id"], created.json()["id"], [_resume_file("adjacent.pdf")])
+    started = _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"])
+    assert started.status_code == 200, started.text
+
+    class AdjacentProvider:
+        name = "adjacent-provider"
+        engine_version = "test"
+
+        def evaluate(self, item):
+            return ProviderExecutionResult(
+                provider=self.name,
+                provider_engine_version=self.engine_version,
+                payload={
+                    "artifact_schema_version": "candidate-evaluation-v1",
+                    "eligibility": {"status": "FAIL", "failed_requirements": [], "requirement_details": []},
+                    "criterion_evaluations": [
+                        {
+                            "criterion_id": "required",
+                            "criterion_name": "Required evidence",
+                            "category": "skill",
+                            "status": "not_found",
+                            "explanation": "Missing required/core components: FastAPI",
+                            "evidence_found": ["Python service support"],
+                            "missing_information": ["FastAPI is not stated in the resume"],
+                            "component_assessment": {
+                                "supported_adjacent_components": ["Python service support"],
+                                "missing_core_components": ["FastAPI"],
+                                "missing_evaluation_dimensions": ["backend ownership"],
+                            },
+                            "evidence": [
+                                {"source_type": "resume", "source_document_id": item.id, "exact_text": "Python"}
+                            ],
+                        }
+                    ],
+                    "evidence_completeness": 0.85,
+                    "experience_summary": {"confirmed_months": 36},
+                    "warnings": ["Verify framework ownership in interview."],
+                },
+            )
+
+    while process_next_bulk_screening_jobs(db_session, provider=AdjacentProvider()):
+        db_session.commit()
+
+    refreshed = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    item = refreshed.json()["items"][0]
+    assert item["classification"] == "NEEDS_REVIEW"
+    assert "not demonstrated" in item["concise_reason"].lower()
+    assert "No sufficient evidence" not in item["concise_reason"]
+    assert item["criterion_results"][0]["raw_component_assessment"]["supported_adjacent_components"] == [
+        "Python service support"
+    ]
+
+
+def test_bulk_screening_verified_hard_gate_failure_classifies_does_not_meet(
+    client,
+    db_session,
+    users,
+    published_job,
+):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(client, users["recruiter"]["id"], created.json()["id"], [_resume_file("hard-gate.pdf")])
+    started = _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"])
+    assert started.status_code == 200, started.text
+
+    class HardGateProvider:
+        name = "hard-gate-provider"
+        engine_version = "test"
+
+        def evaluate(self, item):
+            return ProviderExecutionResult(
+                provider=self.name,
+                provider_engine_version=self.engine_version,
+                payload={
+                    "artifact_schema_version": "candidate-evaluation-v1",
+                    "eligibility": {
+                        "status": "FAIL",
+                        "failed_requirements": ["experience"],
+                        "requirement_details": [
+                            {
+                                "requirement_id": "experience",
+                                "status": "not_met",
+                                "description": "minimum 24 months confirmed experience",
+                            }
+                        ],
+                    },
+                    "criterion_evaluations": [
+                        {
+                            "criterion_id": "experience",
+                            "criterion_name": "Required experience",
+                            "category": "experience",
+                            "status": "not_met",
+                            "explanation": "Confirmed experience is below the required threshold.",
+                            "missing_information": [],
+                            "component_assessment": {},
+                            "evidence": [
+                                {"source_type": "resume", "source_document_id": item.id, "exact_text": "6 months"}
+                            ],
+                        }
+                    ],
+                    "evidence_completeness": 0.95,
+                    "experience_summary": {"confirmed_months": 6},
+                },
+            )
+
+    while process_next_bulk_screening_jobs(db_session, provider=HardGateProvider()):
+        db_session.commit()
+
+    refreshed = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    item = refreshed.json()["items"][0]
+    assert item["classification"] == "DOES_NOT_MEET_CRITERIA"
+    assert "Verified hard-gate evidence" in item["concise_reason"]
+    assert "minimum 24 months confirmed experience" in item["concise_reason"]

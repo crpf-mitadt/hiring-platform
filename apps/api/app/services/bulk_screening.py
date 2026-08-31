@@ -736,6 +736,7 @@ def item_to_read(item: BulkScreeningItem) -> dict[str, Any]:
                 "verification_needed": result.verification_needed,
                 "matched_terms": result.matched_terms,
                 "unmatched_terms": result.unmatched_terms,
+                "raw_component_assessment": result.raw_component_assessment,
                 "evidence": result.evidence,
             }
             for result in item.criterion_results
@@ -955,27 +956,41 @@ def _classification_from_payload(payload: dict[str, Any]) -> BulkScreeningClassi
     eligibility = ((payload.get("eligibility") or {}).get("status") or "").upper()
     if eligibility == "PASS":
         return BulkScreeningClassification.MEETS_CRITERIA
-    if eligibility == "FAIL" and _has_sufficient_evaluation_evidence(payload):
+    if eligibility == "FAIL" and _has_verified_hard_gate_failure(payload):
         return BulkScreeningClassification.DOES_NOT_MEET_CRITERIA
     return BulkScreeningClassification.NEEDS_REVIEW
 
 
-def _has_sufficient_evaluation_evidence(payload: dict[str, Any]) -> bool:
-    if payload.get("evidence_completeness") is not None and float(payload.get("evidence_completeness") or 0) < 0.4:
-        return False
-    return any(
-        entry.get("evidence") or entry.get("missing_information")
-        for entry in payload.get("criterion_evaluations", [])
-    )
+def _has_verified_hard_gate_failure(payload: dict[str, Any]) -> bool:
+    eligibility = payload.get("eligibility") or {}
+    failed_requirement_ids = {str(value) for value in eligibility.get("failed_requirements", [])}
+    details = eligibility.get("requirement_details", [])
+    verified_failure_statuses = {"not_met", "below_minimum", "contradicted", "failed"}
+    if not details and failed_requirement_ids:
+        return True
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        status = str(detail.get("status") or "").lower()
+        requirement_id = str(detail.get("requirement_id") or detail.get("id") or "")
+        if status in verified_failure_statuses and (
+            not failed_requirement_ids or requirement_id in failed_requirement_ids
+        ):
+            return True
+    return False
 
 
 def _concise_reason(payload: dict[str, Any], classification: BulkScreeningClassification) -> str:
     evaluations = payload.get("criterion_evaluations", [])
     matched = []
+    adjacent = []
     missing = []
     for entry in evaluations:
         component = entry.get("component_assessment") or {}
         matched.extend(_matched_terms(component))
+        adjacent.extend(str(item) for item in component.get("supported_adjacent_components", []))
+        adjacent.extend(str(item) for item in component.get("source_declared_adjacent_components", []))
+        adjacent.extend(str(item) for item in component.get("inferred_adjacent_components", []))
         missing.extend(_unmatched_terms(component))
         missing.extend(str(item) for item in entry.get("missing_information", []))
     months = (payload.get("experience_summary") or {}).get("confirmed_months")
@@ -984,10 +999,38 @@ def _concise_reason(payload: dict[str, Any], classification: BulkScreeningClassi
         month_text = f", with {months} months of confirmed relevant experience" if months is not None else ""
         return f"Required evidence is present for {evidence}{month_text}."
     if classification == BulkScreeningClassification.DOES_NOT_MEET_CRITERIA:
-        gap = ", ".join(missing[:2]) or "one or more mandatory requirements"
-        return f"No sufficient evidence was found for {gap}."
+        gap = ", ".join(_verified_hard_gate_descriptions(payload)[:2]) or "one or more mandatory requirements"
+        return f"Verified hard-gate evidence indicates the candidate is below {gap}."
+    if matched or adjacent:
+        evidence = ", ".join((matched + adjacent)[:3])
+        gap = ", ".join(missing[:2])
+        suffix = (
+            f" {gap} is not demonstrated in the resume and should be verified."
+            if gap
+            else " HR review is still required."
+        )
+        return f"Related evidence was found for {evidence}.{suffix}"
+    if missing:
+        return "Some required evidence is not demonstrated in the resume and should be verified by HR."
     warning = ", ".join(str(item) for item in payload.get("warnings", [])[:2])
     return warning or "Evidence is incomplete or ambiguous and requires HR review."
+
+
+def _verified_hard_gate_descriptions(payload: dict[str, Any]) -> list[str]:
+    eligibility = payload.get("eligibility") or {}
+    failed_requirement_ids = {str(value) for value in eligibility.get("failed_requirements", [])}
+    descriptions = []
+    for detail in eligibility.get("requirement_details", []):
+        if not isinstance(detail, dict):
+            continue
+        status = str(detail.get("status") or "").lower()
+        requirement_id = str(detail.get("requirement_id") or detail.get("id") or "")
+        if status not in {"not_met", "below_minimum", "contradicted", "failed"}:
+            continue
+        if failed_requirement_ids and requirement_id not in failed_requirement_ids:
+            continue
+        descriptions.append(str(detail.get("description") or detail.get("name") or requirement_id))
+    return descriptions
 
 
 def _candidate_name_from_payload(payload: dict[str, Any], structured_resume_path: Path | None = None) -> str | None:
