@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,9 +27,12 @@ from app.models import (
 from app.services.audit import record_audit
 from app.services.documents import LocalDocumentStorage
 from app.services.engine_mapping import EngineEvaluationMapper
+from app.services.structured_jd_contract import DESIGNATION_OPTIONS, validate_structured_jd_for_engine
 from app.services.workflow import transition_application
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -182,7 +187,17 @@ class HiringScreeningEngineProvider:
         structured_resume_path = run_dir / "structured-resume.json"
         evaluation_path = run_dir / "evaluation.json"
         structured_jd_path.write_text(
-            json.dumps(run.rubric_version.structured_jd_payload, indent=2),
+            json.dumps(
+                validate_structured_jd_for_engine(
+                    run.rubric_version.structured_jd_payload,
+                    target_designation=(
+                        run.application.applied_designation
+                        if run.application.applied_designation in DESIGNATION_OPTIONS
+                        else None
+                    ),
+                ).canonical_payload,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -324,6 +339,12 @@ def enqueue_screening_run(
     rubric_version = _current_approved_rubric(db, application)
     if rubric_version is None:
         raise InvalidTransition("Screening requires an approved rubric version")
+    validate_structured_jd_for_engine(
+        rubric_version.structured_jd_payload,
+        target_designation=(
+            application.applied_designation if application.applied_designation in DESIGNATION_OPTIONS else None
+        ),
+    )
     resume_document = application.resume_document or application.candidate.resume_document
     if resume_document is None:
         raise InvalidTransition("Screening requires a stored resume document")
@@ -586,24 +607,40 @@ def _run_command(
     failure_code: str,
     model_endpoint_slot: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.communicate(timeout=5)
+        except Exception:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except Exception:
+                logger.exception("screening_engine_process_cleanup_failed pid=%s", process.pid)
         raise EngineProviderError(
             "ENGINE_TIMEOUT",
             "Engine command timed out",
             model_endpoint_slot=model_endpoint_slot,
         ) from error
+    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if completed.returncode != 0:
-        diagnostic = " ".join((completed.stderr or completed.stdout).split())[:500]
+        diagnostic = " ".join((completed.stderr or completed.stdout).split())
+        logger.error(
+            "screening_engine_command_failed failure_code=%s returncode=%s diagnostic=%s",
+            failure_code,
+            completed.returncode,
+            diagnostic,
+        )
         code = _classify_command_failure(failure_code, diagnostic)
         raise EngineProviderError(
             code,
@@ -652,6 +689,9 @@ def _is_service_failure_code(failure_code: str) -> bool:
 
 
 def _classify_command_failure(failure_code: str, diagnostic: str) -> str:
+    lowered = diagnostic.lower()
+    if "validationerror" in lowered and "structuredjd" in lowered:
+        return "INVALID_STRUCTURED_JD"
     if failure_code in {"CHANDRA_UNAVAILABLE", "GEMMA_UNAVAILABLE"}:
         if _looks_like_transport_or_service_failure(diagnostic):
             return failure_code
@@ -694,6 +734,8 @@ def _looks_like_transport_or_service_failure(diagnostic: str) -> bool:
 def _failure_code(error: Exception) -> str:
     if isinstance(error, EngineProviderError):
         return error.failure_code
+    if getattr(error, "code", None) == "INVALID_SCREENING_CRITERIA":
+        return "INVALID_STRUCTURED_JD"
     message = str(error)
     if "Unsupported engine evaluation artifact schema" in message:
         return "ENGINE_SCHEMA_UNSUPPORTED"
@@ -723,4 +765,23 @@ def _engine_git_commit(engine_root: Path, settings) -> str | None:
 
 
 def _safe_failure_message(error: Exception) -> str:
-    return " ".join(str(error).split())[:500] or error.__class__.__name__
+    code = _failure_code(error)
+    safe_messages = {
+        "INVALID_STRUCTURED_JD": "Screening criteria are not compatible with the current screening engine.",
+        "INVALID_RUBRIC": "Screening criteria need review before processing can continue.",
+        "ENGINE_SCHEMA_UNSUPPORTED": "The screening engine returned an unsupported result format.",
+        "RUBRIC_NOT_APPROVED": "Screening requires an approved rubric version.",
+        "DOCUMENT_NOT_FOUND": "Screening could not find the stored resume document.",
+        "CHANDRA_UNAVAILABLE": "Resume OCR service was unavailable during screening.",
+        "GEMMA_UNAVAILABLE": "Resume structuring service was unavailable during screening.",
+        "ENGINE_TIMEOUT": "Screening timed out before the engine returned a result.",
+        "ENGINE_CONFIGURATION_ERROR": "Screening is not configured correctly for this environment.",
+        "ENGINE_OUTPUT_MISSING": "The screening engine did not produce an evaluation artifact.",
+        "ENGINE_OUTPUT_INVALID": "The screening engine produced an invalid evaluation artifact.",
+        "ENGINE_EXECUTION_FAILED": (
+            "Screening could not be completed for this resume. The item has been moved to Needs Review."
+        ),
+    }
+    if code in safe_messages:
+        return safe_messages[code]
+    return "Technical processing issue"

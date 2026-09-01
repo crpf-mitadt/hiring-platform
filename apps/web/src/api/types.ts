@@ -358,6 +358,7 @@ export type BulkScreeningBatch = {
   ad_hoc_structured_jd: BulkStructuredJd | null
   ad_hoc_structured_jd_sha256: string | null
   criteria_snapshot: BulkScreeningCriterionSnapshot[]
+  target_designation: string | null
   criteria_confirmed_by_id: string | null
   criteria_confirmed_at: string | null
   title: string
@@ -368,8 +369,12 @@ export type BulkScreeningBatch = {
   unsupported_count: number
   completed_count: number
   failed_count: number
+  failure_code: string | null
+  failure_message: string | null
   started_at: string | null
   completed_at: string | null
+  archived_at: string | null
+  archived_by_id: string | null
   created_at: string
   updated_at: string
   items: BulkScreeningItem[]

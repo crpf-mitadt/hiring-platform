@@ -30,6 +30,27 @@ type RequestOptions = {
   body?: unknown
 }
 
+export type ApiErrorIssue = {
+  type?: string
+  description?: string
+  requirement_id?: string
+  criterion_id?: string
+  field?: string
+  options?: string[]
+}
+
+export class ApiError extends Error {
+  code?: string
+  issues: ApiErrorIssue[]
+
+  constructor(message: string, code?: string, issues: ApiErrorIssue[] = []) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = code
+    this.issues = issues
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: options.method ?? 'GET',
@@ -41,7 +62,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(readableError(payload.detail, response.statusText))
+    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [])
   }
   return response.json()
 }
@@ -54,7 +75,7 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(readableError(payload.detail, response.statusText))
+    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [])
   }
   return response.json()
 }
@@ -232,10 +253,16 @@ export const api = {
     formData.append('jd_file', jdFile)
     return requestForm<BulkScreeningBatch>('/api/bulk-screening/batches/ad-hoc-jd', formData)
   },
-  confirmBulkCriteria(batchId: string) {
+  confirmBulkCriteria(batchId: string, targetDesignation: string | null = null) {
     return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/confirm-criteria`, {
       method: 'POST',
-      body: { confirmed: true }
+      body: { confirmed: true, target_designation: targetDesignation }
+    })
+  },
+  reconcileBulkCriteria(batchId: string, targetDesignation: string | null = null) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/reconcile-criteria`, {
+      method: 'POST',
+      body: { confirmed: true, target_designation: targetDesignation }
     })
   },
   addBulkResumes(batchId: string, files: File[], zipFile: File | null) {
@@ -255,6 +282,12 @@ export const api = {
       if (!response.ok) throw new Error(response.statusText || 'Request failed. Please try again.')
       return true
     })
+  },
+  archiveBulkBatch(batchId: string) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/archive`, { method: 'POST' })
+  },
+  resumeBulkBatch(batchId: string) {
+    return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}/resume`, { method: 'POST' })
   },
   bulkExportUrl(batchId: string) {
     return `${baseUrl}/api/bulk-screening/batches/${batchId}/export.csv`

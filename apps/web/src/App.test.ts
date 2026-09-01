@@ -16,25 +16,45 @@ const apiMock = vi.hoisted(() => ({
   createExistingJobBulkBatch: vi.fn(),
   createAdHocBulkBatch: vi.fn(),
   confirmBulkCriteria: vi.fn(),
+  reconcileBulkCriteria: vi.fn(),
   addBulkResumes: vi.fn(),
   startBulkBatch: vi.fn(),
   discardBulkBatch: vi.fn(),
+  archiveBulkBatch: vi.fn(),
+  resumeBulkBatch: vi.fn(),
   bulkExportUrl: vi.fn(),
   screeningDossier: vi.fn(),
   applicationAccessStatus: vi.fn(),
   applicationAccessAssessment: vi.fn()
 }))
 
-vi.mock('./api/client', () => ({ api: apiMock }))
+vi.mock('./api/client', () => ({
+  ApiError: class ApiError extends Error {
+    code?: string
+    issues: unknown[]
+
+    constructor(message: string, code?: string, issues: unknown[] = []) {
+      super(message)
+      this.code = code
+      this.issues = issues
+    }
+  },
+  api: apiMock
+}))
 vi.mock('frappe-ui', () => ({
   Alert: { props: ['title', 'description'], template: '<div><strong>{{ title }}</strong><p>{{ description }}</p></div>' },
   Avatar: { props: ['label'], template: '<span>{{ label }}</span>' },
   Badge: { props: ['label'], template: '<span class="mock-badge">{{ label }}<slot /></span>' },
   Breadcrumbs: { props: ['items'], template: '<nav><span v-for="item in items" :key="item.label">{{ item.label }}</span></nav>' },
-  Button: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}<slot /></button>` },
+  Button: { props: ['label'], template: `<button @click="$emit('click', $event)">{{ label }}<slot /></button>` },
   DesktopShell: { template: '<div><slot name="sidebar" /><slot /></div>' },
   Divider: { template: '<hr />' },
   Dialog: { props: ['open', 'title'], template: '<section v-if="open"><h2>{{ title }}</h2><slot /></section>' },
+  Dropdown: {
+    props: ['options', 'button'],
+    template:
+      `<div><button>{{ button?.label ?? 'More' }}</button><button v-for="option in options" :key="option.label" :disabled="option.disabled" @click="option.onClick?.($event)">{{ option.label }}</button></div>`
+  },
   ErrorMessage: { props: ['message'], template: '<p>{{ message }}</p>' },
   FormControl: {
     props: ['modelValue', 'label'],
@@ -113,9 +133,10 @@ const bulkBatch = {
   ad_hoc_structured_jd: null,
   ad_hoc_structured_jd_sha256: null,
   criteria_snapshot: [{ criterion_id: 'required', name: 'Required skills evidence', category: 'skill' }],
+  target_designation: null,
   criteria_confirmed_by_id: null,
   criteria_confirmed_at: null,
-  title: 'Full Stack - Aug 26',
+  title: 'Full Stack Engineering Screening Batch With Long Academic Department Title And Multi Campus Delivery Context',
   status: 'COMPLETED',
   total_files: 4,
   accepted_count: 4,
@@ -123,8 +144,12 @@ const bulkBatch = {
   unsupported_count: 0,
   completed_count: 3,
   failed_count: 1,
+  failure_code: null,
+  failure_message: null,
   started_at: '2026-08-26T00:00:00Z',
   completed_at: '2026-08-26T00:10:00Z',
+  archived_at: null,
+  archived_by_id: null,
   created_at: '2026-08-26T00:00:00Z',
   updated_at: '2026-08-26T00:10:00Z',
   jd_document: null,
@@ -170,10 +195,15 @@ const bulkBatch = {
             'The resume contains several pieces of direct evidence, but the reviewer still needs to confirm whether the production ownership was independent or team-based.',
           candidate_requirement:
             'Required full-stack engineering experience with React, Node.js, SQL and production deployment ownership.',
-          evidence_found: ['React applications', 'Node.js APIs', 'SQL reporting'],
-          missing_information: ['Exact scale of production traffic is not stated'],
+          evidence_found: [
+            'React applications',
+            'Node.js APIs',
+            'SQL reporting',
+            'Built React and Node.js systems with SQL-backed reporting, release checklists, and production support for university admissions workflows across multiple intake cycles.'
+          ],
+          missing_information: ['Exact scale of production traffic is not stated', 'availability for campus interview'],
           ambiguity: [],
-          verification_needed: ['Confirm independent ownership of release planning'],
+          verification_needed: ['Confirm independent ownership of release planning', 'communication clarity during panel interview'],
           matched_terms: ['React', 'Node.js', 'SQL', 'CI/CD', 'production deployment'],
           unmatched_terms: ['Kubernetes ownership'],
           raw_component_assessment: {
@@ -497,9 +527,12 @@ describe('Hiring Platform product shell', () => {
       items: []
     })
     apiMock.confirmBulkCriteria.mockResolvedValue({ ...bulkBatch, source_type: 'ADHOC_JD', status: 'READY', items: [] })
+    apiMock.reconcileBulkCriteria.mockResolvedValue({ ...bulkBatch, source_type: 'ADHOC_JD', status: 'DRAFT', items: [] })
     apiMock.addBulkResumes.mockResolvedValue(bulkDraftBatch)
     apiMock.startBulkBatch.mockResolvedValue({ ...bulkDraftBatch, status: 'QUEUED' })
     apiMock.discardBulkBatch.mockResolvedValue(true)
+    apiMock.archiveBulkBatch.mockResolvedValue({ ...bulkBatch, archived_at: '2026-08-26T00:15:00Z' })
+    apiMock.resumeBulkBatch.mockResolvedValue({ ...bulkBatch, status: 'QUEUED' })
     apiMock.bulkExportUrl.mockReturnValue('/api/bulk-screening/batches/bulk-1/export.csv')
     apiMock.listApplications.mockResolvedValue([
       {
@@ -670,8 +703,10 @@ describe('Hiring Platform product shell', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Bulk screening')
-    expect(wrapper.text()).toContain('Full Stack - Aug 26')
-    expect(wrapper.text()).toContain('Resume Draft')
+    expect(wrapper.text()).toContain('Full Stack Engineering Screening Batch With Long Academic Department Title')
+    expect(wrapper.text()).toContain('Resume draft')
+    expect(wrapper.text()).toContain('Discard screening')
+    expect(wrapper.text()).toContain('Archive screening')
     expect(wrapper.text()).toContain('New Screening')
     expect(wrapper.text()).not.toContain('Total resumes')
     expect(wrapper.text()).not.toContain('Export Results')
@@ -698,9 +733,10 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).toContain('Needs Review')
     expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
     expect(wrapper.text()).toContain('Export Results')
+    expect(wrapper.text()).toContain('Archive screening')
     expect(wrapper.text()).toContain('View Evidence')
     expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
-    expect(wrapper.text()).not.toContain('Resume Draft')
+    expect(wrapper.text()).not.toContain('Resume draft')
     expect(wrapper.text()).not.toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Queued resumes')
     expect(wrapper.text()).not.toContain('Needs attention')
@@ -752,13 +788,20 @@ describe('Hiring Platform product shell', () => {
       'Required full-stack engineering experience with React, Node.js, SQL, deployment ownership and maintainable production delivery'
     )
     expect(wrapper.text()).toContain('Evidence found')
-    expect(wrapper.text()).toContain('Not demonstrated / follow-up')
-    expect(wrapper.text()).toContain('Transferable / adjacent signal')
+    expect(wrapper.text()).toContain('Resume not conclusive')
+    expect(wrapper.text()).toContain('Related experience')
+    expect(wrapper.text()).toContain('Interview / assessment follow-up')
     expect(wrapper.text()).toContain('View 2 evidence details')
     expect(wrapper.text()).toContain('Python scripting')
     expect(wrapper.text()).toContain('backend ownership across validation and migrations')
+    expect(wrapper.text()).toContain('availability for campus interview')
+    expect(wrapper.text()).toContain('communication clarity during panel interview')
+    const badgeText = wrapper.findAll('.mock-badge').map((badge) => badge.text()).join(' ')
+    expect(badgeText).toContain('React')
+    expect(badgeText).not.toContain('Built React and Node.js systems with SQL-backed reporting')
     expect(wrapper.text()).not.toContain('Matched evidence')
     expect(wrapper.text()).not.toContain('Gaps')
+    expect(wrapper.text()).not.toContain('No adjacent signal recorded')
     expect(wrapper.text()).not.toContain('No sufficient evidence')
   })
 
@@ -786,8 +829,27 @@ describe('Hiring Platform product shell', () => {
     expect(dialogSource).toContain('selectedBulkEvidenceItem.criterion_results')
     expect(dialogSource).toContain('max-h-[72vh]')
     expect(dialogSource).toContain('overflow-y-auto')
+    expect(dialogSource).toContain('lg:grid-cols-2')
+    expect(dialogSource).not.toContain('md:grid-cols-3')
     expect(dialogSource).not.toContain('<List')
     expect(dialogSource).not.toContain('row-height')
+  })
+
+  it('keeps bulk history status and actions separated with constrained columns', () => {
+    const source = readFileSync('src/App.vue', 'utf8')
+    const historyStart = source.indexOf("route === 'staffBulkScreening' && !routeBulkBatchId")
+    const historySource = source.slice(
+      historyStart,
+      source.indexOf("route === 'staffBulkScreeningNew'", historyStart)
+    )
+
+    expect(historySource).toContain("['minmax(18rem,2fr)', 'minmax(12rem,1fr)', '8rem', '8rem', '8rem', '7rem']")
+    expect(historySource).toContain('line-clamp-2 break-words')
+    expect(historySource).toContain('<StatusBadge :value="batch.status" />')
+    expect(historySource).toContain('Resume draft')
+    expect(historySource).toContain('Discard')
+    expect(historySource).toContain('<Dropdown')
+    expect(historySource).not.toContain('Resume Draft')
   })
 
   it('renders persisted bulk draft review with filenames and duplicate status', async () => {
@@ -803,19 +865,88 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Resume Draft')
+    expect(wrapper.text()).toContain('Resume draft')
 
-    await wrapper.findAll('button').find((button) => button.text() === 'Resume Draft')?.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Resume draft')?.trigger('click')
     await flushPromises()
 
     expect(globalThis.location.pathname).toBe('/app/bulk-screening/new')
-    expect(wrapper.text()).toContain('Discard Draft')
+    expect(wrapper.text()).toContain('Discard screening')
     expect(wrapper.text()).toContain('Files supplied')
     expect(wrapper.text()).toContain('Ready to screen')
     expect(wrapper.text()).toContain('Vishakha-yawale.pdf')
     expect(wrapper.text()).toContain('Vishakha-yawale-copy.pdf')
     expect(wrapper.text()).toContain('Duplicate of Vishakha-yawale.pdf')
     expect(wrapper.text()).toContain('Start Screening')
+  })
+
+  it('discards a draft screening and returns to bulk history', async () => {
+    const { dialog } = await import('frappe-ui')
+    vi.mocked(dialog.confirm).mockImplementation(({ onConfirm }) => {
+      void onConfirm?.({ close: vi.fn(), setError: vi.fn() })
+      return { close: vi.fn() }
+    })
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Discard screening')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.discardBulkBatch).toHaveBeenCalledWith('bulk-draft')
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+  })
+
+  it('archives a completed screening and returns to bulk history', async () => {
+    const { dialog } = await import('frappe-ui')
+    vi.mocked(dialog.confirm).mockImplementation(({ onConfirm }) => {
+      void onConfirm?.({ close: vi.fn(), setError: vi.fn() })
+      return { close: vi.fn() }
+    })
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Archive screening')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.archiveBulkBatch).toHaveBeenCalledWith('bulk-1')
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+  })
+
+  it('keeps queued bulk screening destructive action unavailable', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    apiMock.bulkBatch.mockResolvedValue({ ...bulkBatch, status: 'QUEUED', completed_count: 0, failed_count: 0 })
+    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Cancel screening')
+    expect(wrapper.text()).not.toContain('Archive screening')
+    expect(wrapper.text()).not.toContain('Discard screening')
   })
 
   it('does not move to bulk review from browser-only file selection', async () => {

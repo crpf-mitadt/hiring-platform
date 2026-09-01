@@ -52,9 +52,10 @@ from app.models import (
 from app.services.auth import hash_password
 from app.services.jobs import approve_rubric_version
 from app.services.rubric_utils import rubric_payload_hash
+from app.services.structured_jd_contract import validate_structured_jd_for_engine
 
 DEMO_MARKER = "DEVELOPMENT / DEMO MANUAL APPROVED RUBRIC"
-DEMO_STRUCTURED_JD_REVISION = "mit-adt-demo-structured-jd-v2"
+DEMO_STRUCTURED_JD_REVISION = "mit-adt-demo-structured-jd-v3"
 DEMO_RUBRIC_PROVIDER = "development-seed-approved"
 
 VACANCIES = [
@@ -111,7 +112,7 @@ VACANCIES = [
         "criteria": [
             {"criterion_id": "teaching", "name": "Teaching and curriculum capability", "category": "teaching", "weight": 35},
             {"criterion_id": "research", "name": "Research and publications", "category": "research", "weight": 35},
-            {"criterion_id": "statutory_norms", "name": "Applicable statutory norms", "category": "eligibility", "weight": 30},
+            {"criterion_id": "statutory_norms", "name": "Applicable statutory norms", "category": "certification", "weight": 30},
         ],
     },
     {
@@ -129,7 +130,7 @@ VACANCIES = [
         "criteria": [
             {"criterion_id": "studio_teaching", "name": "Studio and classroom teaching", "category": "teaching", "weight": 35},
             {"criterion_id": "creative_research", "name": "Creative practice and research", "category": "research", "weight": 35},
-            {"criterion_id": "norms", "name": "COA/AICTE/UGC norms", "category": "eligibility", "weight": 30},
+            {"criterion_id": "norms", "name": "COA/AICTE/UGC norms", "category": "certification", "weight": 30},
         ],
     },
     {
@@ -147,7 +148,7 @@ VACANCIES = [
         "criteria": [
             {"criterion_id": "teaching", "name": "Teaching and academic contribution", "category": "teaching", "weight": 35},
             {"criterion_id": "research", "name": "Research and publications", "category": "research", "weight": 35},
-            {"criterion_id": "regulatory", "name": "UGC/BCI/NCTE/AICTE norms", "category": "eligibility", "weight": 30},
+            {"criterion_id": "regulatory", "name": "UGC/BCI/NCTE/AICTE norms", "category": "certification", "weight": 30},
         ],
     },
 ]
@@ -749,6 +750,8 @@ def _approved_demo_rubric(db, actor: User, job: Job, vacancy: dict) -> None:
     payload = _structured_jd_payload(job, vacancy)
     criteria = payload["scoring_rubric"]
     _validate_demo_rubric_payload(job, vacancy, payload, criteria)
+    seed_fingerprint = _seed_fingerprint(vacancy)
+    platform_metadata = _platform_seed_metadata(job, vacancy, payload, seed_fingerprint)
     current_version = db.get(JobRubricVersion, rubric.current_version_id) if rubric.current_version_id else None
     if _is_current_corrected_seed_version(current_version, payload, criteria):
         job.status = JobStatus.PUBLISHED
@@ -773,7 +776,8 @@ def _approved_demo_rubric(db, actor: User, job: Job, vacancy: dict) -> None:
             "source": DEMO_RUBRIC_PROVIDER,
             "engine_schema": "StructuredJD",
             "seed_revision": DEMO_STRUCTURED_JD_REVISION,
-            "seed_fingerprint": payload["seed_fingerprint"],
+            "seed_fingerprint": seed_fingerprint,
+            "platform_metadata": platform_metadata,
             "approval_note": DEMO_MARKER,
         },
     )
@@ -800,37 +804,45 @@ def _is_current_corrected_seed_version(
 def _structured_jd_payload(job: Job, vacancy: dict) -> dict:
     profile = DEMO_STRUCTURED_JD_PROFILES[vacancy["title"]]
     criteria = _criteria_for_vacancy(vacancy, profile)
-    return {
+    payload = {
         "schema_version": "structured-jd-v1",
-        "seed_revision": DEMO_STRUCTURED_JD_REVISION,
-        "seed_fingerprint": _seed_fingerprint(vacancy),
-        "demo_marker": DEMO_MARKER,
         "job_id": job.id,
-        "source_reference": vacancy["source_reference"],
         "source_document_id": job.jd_document.id if job.jd_document else job.jd_document_ref or "manual-jd",
-        "source_document_sha256": job.jd_document.sha256 if job.jd_document else None,
-        "extraction_method": "development_manual_seed",
+        "extraction_method": "deterministic_fallback",
         "job_title": vacancy["title"],
         "department": vacancy["department"],
+        "role_summary": profile["role_summary"],
+        "responsibilities": profile["responsibilities"],
+        "mandatory_requirements": _requirement_objects_for_criteria(criteria),
+        "preferred_requirements": _preferred_requirement_objects(profile, criteria),
+        "required_skills": profile["required_skills"],
+        "preferred_skills": profile["preferred_skills"],
+        "minimum_experience_months": profile["minimum_experience_months"],
+        "domain": profile["domain"],
+        "seniority": profile["seniority"],
+        "scoring_rubric": criteria,
+        "extraction_warnings": [DEMO_MARKER],
+    }
+    return validate_structured_jd_for_engine(payload).canonical_payload
+
+
+def _platform_seed_metadata(job: Job, vacancy: dict, payload: dict, seed_fingerprint: str) -> dict:
+    profile = DEMO_STRUCTURED_JD_PROFILES[vacancy["title"]]
+    return {
+        "seed_revision": DEMO_STRUCTURED_JD_REVISION,
+        "seed_fingerprint": seed_fingerprint,
+        "demo_marker": DEMO_MARKER,
+        "source_reference": vacancy["source_reference"],
+        "source_document_sha256": job.jd_document.sha256 if job.jd_document else None,
         "designation": vacancy["designation"],
         "employment_type": vacancy["employment_type"],
         "location": vacancy["location"],
         "role_category": vacancy["role_category"].value,
-        "role_summary": profile["role_summary"],
-        "responsibilities": profile["responsibilities"],
-        "mandatory_requirements": profile["mandatory_requirements"],
-        "preferred_requirements": profile["preferred_requirements"],
-        "required_skills": profile["required_skills"],
-        "preferred_skills": profile["preferred_skills"],
         "adjacent_skills": profile["adjacent_skills"],
-        "minimum_experience_months": profile["minimum_experience_months"],
         "maximum_experience_months": profile.get("maximum_experience_months"),
-        "domain": profile["domain"],
-        "seniority": profile["seniority"],
         "contains_teaching": vacancy["role_category"] == JobRoleCategory.FACULTY,
         "contains_student_facing": vacancy["role_category"] == JobRoleCategory.FACULTY,
-        "scoring_rubric": criteria,
-        "extraction_warnings": [DEMO_MARKER],
+        "structured_jd_sha256": sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest(),
     }
 
 
@@ -838,8 +850,69 @@ def _criteria_for_vacancy(vacancy: dict, profile: dict) -> list[dict]:
     criteria = []
     for base in vacancy["criteria"]:
         details = profile["criterion_details"][base["criterion_id"]]
-        criteria.append({**base, **details})
+        criteria.append({**base, **details, "category": _canonical_seed_category(base["category"])})
     return criteria
+
+
+def _requirement_objects_for_criteria(criteria: list[dict]) -> list[dict]:
+    requirements = []
+    seen: set[str] = set()
+    for criterion in criteria:
+        if not criterion.get("mandatory"):
+            continue
+        for requirement_id in criterion.get("requirement_ids", []):
+            if requirement_id in seen:
+                continue
+            seen.add(requirement_id)
+            requirements.append(
+                {
+                    "requirement_id": requirement_id,
+                    "category": criterion["category"],
+                    "description": f"{criterion['name']}: {criterion['description']}",
+                    "requirement_type": "minimum",
+                    "mandatory": True,
+                    "preferred": False,
+                    "minimum_value": None,
+                    "unit": None,
+                    "accepted_equivalents": [],
+                    "evidence": [],
+                    "warnings": [],
+                }
+            )
+    return requirements
+
+
+def _preferred_requirement_objects(profile: dict, criteria: list[dict]) -> list[dict]:
+    linked_ids = {
+        requirement_id
+        for criterion in criteria
+        for requirement_id in criterion.get("requirement_ids", [])
+    }
+    requirements = []
+    for index, description in enumerate(profile["preferred_requirements"], start=1):
+        requirement_id = f"preferred-{index}"
+        if requirement_id in linked_ids:
+            continue
+        requirements.append(
+            {
+                "requirement_id": requirement_id,
+                "category": "other",
+                "description": description,
+                "requirement_type": "preferred",
+                "mandatory": False,
+                "preferred": True,
+                "minimum_value": None,
+                "unit": None,
+                "accepted_equivalents": [],
+                "evidence": [],
+                "warnings": [],
+            }
+        )
+    return requirements
+
+
+def _canonical_seed_category(category: str) -> str:
+    return "certification" if category == "eligibility" else category
 
 
 def _seed_fingerprint(vacancy: dict) -> str:
@@ -869,6 +942,7 @@ def _validate_demo_rubric_payload(job: Job, vacancy: dict, payload: dict, criter
         for field in ("name", "category", "weight"):
             if actual[field] != expected[field]:
                 raise RuntimeError(f"Demo criterion {criterion_id} {field} mismatch for {vacancy['title']}")
+    validate_structured_jd_for_engine(payload)
     if vacancy["role_category"] == JobRoleCategory.NON_TEACHING:
         blocked_terms = ["teaching", "student-facing", "student facing", "academic journal", "research papers"]
         text = _payload_text(payload)
@@ -880,13 +954,7 @@ def _validate_demo_rubric_payload(job: Job, vacancy: dict, payload: dict, criter
 
 
 def _payload_text(payload: dict) -> str:
-    excluded_keys = {
-        "contains_student_facing",
-        "contains_teaching",
-        "demo_marker",
-        "extraction_warnings",
-        "role_category",
-    }
+    excluded_keys = {"extraction_warnings"}
     values: list[str] = []
 
     def collect(value):

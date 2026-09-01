@@ -29,7 +29,9 @@ def test_worker_failure_marks_run_failed_and_allows_retry(client, db_session, us
     assert job.status.value == "FAILED"
     assert run.run_status == ScreeningRunStatus.FAILED
     assert run.failure_code == "ENGINE_EXECUTION_FAILED"
-    assert "sensitive internals omitted" in run.failure_message
+    assert run.failure_message == (
+        "Screening could not be completed for this resume. The item has been moved to Needs Review."
+    )
     assert run.application.current_stage.value == "SCREENING_REVIEW"
 
     retry = client.post(

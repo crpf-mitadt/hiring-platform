@@ -20,7 +20,14 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(_: Request, exc: DomainError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+        content: dict[str, object] = {"detail": exc.message}
+        code = getattr(exc, "code", None)
+        issues = getattr(exc, "issues", None)
+        if code:
+            content["code"] = code
+        if issues:
+            content["issues"] = issues
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/api")

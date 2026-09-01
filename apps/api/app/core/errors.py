@@ -20,3 +20,10 @@ class NotFound(DomainError):
 
 class InvalidTransition(DomainError):
     status_code = 409
+
+
+class StructuredDomainError(InvalidTransition):
+    def __init__(self, message: str, *, code: str, issues: list[dict]):
+        super().__init__(message)
+        self.code = code
+        self.issues = issues

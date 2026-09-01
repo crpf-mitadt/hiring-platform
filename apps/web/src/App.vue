@@ -9,6 +9,7 @@ import {
   DesktopShell,
   Divider,
   Dialog,
+  Dropdown,
   ErrorMessage,
   FormControl,
   LoadingText,
@@ -23,11 +24,12 @@ import {
   TabButtons,
   Textarea,
   Tooltip,
+  type DropdownOptions,
   dialog,
   toast
 } from 'frappe-ui'
 import { List, ListCell, ListHeader, ListHeaderCell, ListRow } from 'frappe-ui/list'
-import { api } from './api/client'
+import { ApiError, api, type ApiErrorIssue } from './api/client'
 import type {
   Application,
   ApplicationStage,
@@ -104,6 +106,8 @@ const bulkJdFile = ref<File | null>(null)
 const bulkZipFile = ref<File | null>(null)
 const bulkResumeFiles = ref<File[]>([])
 const bulkFolderFiles = ref<File[]>([])
+const bulkTargetDesignation = ref('')
+const bulkPreflightIssues = ref<ApiErrorIssue[]>([])
 const isCompactViewport = ref(globalThis.innerWidth < 640)
 const bulkPollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
 
@@ -286,6 +290,24 @@ const bulkJobOptions = computed(() => [
 ])
 const selectedBulkCriteria = computed(() => selectedBulkBatch.value?.criteria_snapshot ?? [])
 const selectedBulkStructuredJd = computed(() => selectedBulkBatch.value?.ad_hoc_structured_jd ?? null)
+function mentionedDesignations(text: string) {
+  const mentioned: string[] = []
+  if (/\bAssistant\s+Professor\b/i.test(text)) mentioned.push('Assistant Professor')
+  if (/\bAssociate\s+Professor\b/i.test(text)) mentioned.push('Associate Professor')
+  const unqualifiedProfessorText = text.replace(/\b(?:Assistant|Associate)\s+Professor\b/gi, '')
+  if (/\bProfessor\b/i.test(unqualifiedProfessorText)) mentioned.push('Professor')
+  return mentioned
+}
+const bulkDesignationOptions = computed(() => {
+  const structuredJd = selectedBulkStructuredJd.value
+  if (!structuredJd) return []
+  const haystack = [
+    String(structuredJd.job_title ?? ''),
+    ...screeningValues(structuredJd.mandatory_requirements).map(String),
+    ...screeningValues(structuredJd.preferred_requirements).map(String)
+  ].join(' ')
+  return mentionedDesignations(haystack).map((designation) => ({ label: designation, value: designation }))
+})
 const bulkReadyItemCount = computed(
   () => selectedBulkBatch.value?.items.filter((item) => item.status === 'PENDING' && item.resume_document_id).length ?? 0
 )
@@ -330,6 +352,9 @@ const bulkEvidenceDialogOpen = computed({
     if (!open) selectedBulkEvidenceItem.value = null
   }
 })
+const canReconcileBulkCriteria = computed(() =>
+  bulkPreflightIssues.value.some((issue) => issue.type === 'MANDATORY_LINK_CONFLICT')
+)
 const applicationSteps = [
   { value: 'basic', label: 'Basic Information' },
   { value: 'education', label: 'Education' },
@@ -466,6 +491,9 @@ async function run<T>(task: () => Promise<T>, success?: string): Promise<T | nul
     }
     return result
   } catch (error) {
+    if (error instanceof ApiError && error.issues.length) {
+      bulkPreflightIssues.value = error.issues
+    }
     errorMessage.value = error instanceof Error ? error.message : 'Request failed. Please try again.'
     toast.error(errorMessage.value)
     return null
@@ -778,6 +806,8 @@ async function openBulkBatch(batchId: string, pushRoute = true) {
   bulkWizardOpen.value = ['DRAFT', 'READY'].includes(batch.status)
   bulkSourceMode.value = batch.source_type === 'EXISTING_JOB' ? 'existing' : 'adhoc'
   bulkForm.job_id = batch.job_id ?? ''
+  bulkTargetDesignation.value = batch.target_designation ?? ''
+  bulkPreflightIssues.value = []
   if (batch.status === 'DRAFT') bulkWorkflowStep.value = 'source'
   if (batch.status === 'READY') bulkWorkflowStep.value = batch.items.length ? 'review' : 'resumes'
   if (pushRoute && ['DRAFT', 'READY'].includes(batch.status)) {
@@ -803,6 +833,8 @@ function newBulkScreening() {
   bulkZipFile.value = null
   bulkResumeFiles.value = []
   bulkFolderFiles.value = []
+  bulkTargetDesignation.value = ''
+  bulkPreflightIssues.value = []
   navigate('staffBulkScreeningNew')
 }
 
@@ -817,16 +849,45 @@ async function uploadAdHocBulkJd() {
     routeBulkBatchId.value = null
     bulkWizardOpen.value = true
     bulkWorkflowStep.value = 'source'
+    bulkTargetDesignation.value = batch.target_designation ?? ''
+    bulkPreflightIssues.value = []
     navigate('staffBulkScreeningNew')
   }
 }
 
 async function confirmAdHocBulkCriteria() {
   if (!selectedBulkBatch.value) return
-  const batch = await run(() => api.confirmBulkCriteria(selectedBulkBatch.value!.id), 'Criteria confirmed.')
+  if (bulkDesignationOptions.value.length > 1 && !bulkTargetDesignation.value) {
+    bulkPreflightIssues.value = [
+      {
+        type: 'TARGET_DESIGNATION_REQUIRED',
+        description: 'Choose which designation this batch should screen against before confirming criteria.'
+      }
+    ]
+    return
+  }
+  const batch = await run(
+    () => api.confirmBulkCriteria(selectedBulkBatch.value!.id, bulkTargetDesignation.value || null),
+    'Criteria confirmed.'
+  )
   if (batch) {
     selectedBulkBatch.value = batch
+    bulkTargetDesignation.value = batch.target_designation ?? bulkTargetDesignation.value
+    bulkPreflightIssues.value = []
     bulkWorkflowStep.value = 'resumes'
+  }
+}
+
+async function reconcileAdHocBulkCriteria() {
+  if (!selectedBulkBatch.value) return
+  const batch = await run(
+    () => api.reconcileBulkCriteria(selectedBulkBatch.value!.id, bulkTargetDesignation.value || null),
+    'Criteria reconciliation applied.'
+  )
+  if (batch) {
+    selectedBulkBatch.value = batch
+    bulkTargetDesignation.value = batch.target_designation ?? bulkTargetDesignation.value
+    bulkPreflightIssues.value = []
   }
 }
 
@@ -841,6 +902,8 @@ async function createExistingBulkBatch() {
     routeBulkBatchId.value = null
     bulkWizardOpen.value = true
     bulkWorkflowStep.value = 'resumes'
+    bulkTargetDesignation.value = batch.target_designation ?? ''
+    bulkPreflightIssues.value = []
     navigate('staffBulkScreeningNew')
   }
 }
@@ -883,10 +946,10 @@ async function startBulkScreening() {
 async function discardBulkDraft() {
   if (!selectedBulkBatch.value || !['DRAFT', 'READY'].includes(selectedBulkBatch.value.status)) return
   dialog.confirm({
-    title: 'Discard bulk screening draft?',
+    title: 'Discard this screening draft?',
     message: 'This removes the unstarted batch and any uploaded files in this draft. Completed screening history is preserved.',
     theme: 'red',
-    confirmLabel: 'Discard Draft',
+    confirmLabel: 'Discard screening',
     onConfirm: async ({ close }) => {
       const ok = await run(() => api.discardBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening draft discarded.')
       if (ok) {
@@ -900,6 +963,142 @@ async function discardBulkDraft() {
       close()
     }
   })
+}
+
+async function archiveBulkScreening() {
+  if (!selectedBulkBatch.value || !['COMPLETED', 'FAILED'].includes(selectedBulkBatch.value.status)) return
+  dialog.confirm({
+    title: 'Archive this screening?',
+    message: 'This removes the batch from active history while preserving stored results, evidence, and audit records.',
+    theme: 'red',
+    confirmLabel: 'Archive screening',
+    onConfirm: async ({ close }) => {
+      const archived = await run(
+        () => api.archiveBulkBatch(selectedBulkBatch.value!.id),
+        'Bulk screening archived.'
+      )
+      if (archived) {
+        selectedBulkBatch.value = null
+        selectedBulkEvidenceItem.value = null
+        routeBulkBatchId.value = null
+        navigate('staffBulkScreening')
+        await loadBulkScreening()
+      }
+      close()
+    }
+  })
+}
+
+async function resumeFailedBulkScreening() {
+  if (!selectedBulkBatch.value || selectedBulkBatch.value.status !== 'FAILED') return
+  const batch = await run(() => api.resumeBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening resumed.')
+  if (batch) {
+    selectedBulkBatch.value = batch
+    bulkPreflightIssues.value = []
+    manageBulkPolling()
+  }
+}
+
+function bulkBatchActions(batch: BulkScreeningBatch): DropdownOptions {
+  if (['DRAFT', 'READY'].includes(batch.status)) {
+    return [
+      {
+        label: 'Resume draft',
+        icon: 'lucide-pencil',
+        onClick: () => {
+          void openBulkBatch(batch.id)
+        }
+      },
+      {
+        label: 'Discard screening',
+        icon: 'lucide-trash-2',
+        theme: 'red' as const,
+        onClick: () => {
+          void openBulkBatch(batch.id).then(discardBulkDraft)
+        }
+      }
+    ]
+  }
+  if (['COMPLETED', 'FAILED'].includes(batch.status)) {
+    return [
+      {
+        label: 'Open',
+        icon: 'lucide-folder-open',
+        onClick: () => {
+          void openBulkBatch(batch.id)
+        }
+      },
+      ...(batch.status === 'FAILED'
+        ? [
+            {
+              label: 'Resume processing',
+              icon: 'lucide-play',
+              onClick: () => {
+                void openBulkBatch(batch.id).then(resumeFailedBulkScreening)
+              }
+            }
+          ]
+        : []),
+      {
+        label: 'Export results',
+        icon: 'lucide-download',
+        onClick: () => {
+          globalThis.location.href = api.bulkExportUrl(batch.id)
+        }
+      },
+      {
+        label: 'Archive screening',
+        icon: 'lucide-archive',
+        theme: 'red' as const,
+        onClick: () => {
+          void openBulkBatch(batch.id).then(archiveBulkScreening)
+        }
+      }
+    ]
+  }
+  return [
+    {
+      label: 'Open',
+      icon: 'lucide-folder-open',
+      onClick: () => {
+        void openBulkBatch(batch.id)
+      }
+    },
+    {
+      label: 'Cancel screening',
+      icon: 'lucide-ban',
+      disabled: true,
+      description: 'Cancellation is not supported for queued or running screening batches.'
+    }
+  ]
+}
+
+function selectedBulkMoreActions(): DropdownOptions {
+  if (!selectedBulkBatch.value) return []
+  if (['COMPLETED', 'FAILED'].includes(selectedBulkBatch.value.status)) {
+    return [
+      ...(selectedBulkBatch.value.status === 'FAILED'
+        ? [
+            {
+              label: 'Resume processing',
+              icon: 'lucide-play',
+              onClick: () => {
+                void resumeFailedBulkScreening()
+              }
+            }
+          ]
+        : []),
+      {
+        label: 'Archive screening',
+        icon: 'lucide-archive',
+        theme: 'red' as const,
+        onClick: () => {
+          void archiveBulkScreening()
+        }
+      }
+    ]
+  }
+  return []
 }
 
 function downloadBulkExport() {
@@ -999,40 +1198,97 @@ function uniqueScreeningValues(values: string[], limit = 6) {
   return [...new Set(values)].slice(0, limit)
 }
 
+function isAtomicScreeningValue(value: string) {
+  const normalized = value.trim()
+  if (!normalized || normalized.length > 44) return false
+  if (normalized.split(/\s+/).length > 5) return false
+  if (/[.!?;:]/.test(normalized)) return false
+  return true
+}
+
+function atomicScreeningValues(values: string[], limit = 6) {
+  return uniqueScreeningValues(values.filter(isAtomicScreeningValue), limit)
+}
+
+function proseScreeningValues(values: string[], limit = 2) {
+  return uniqueScreeningValues(
+    values
+      .map((entry) => humanizeScreeningText(entry))
+      .filter((entry) => entry && !isAtomicScreeningValue(entry)),
+    limit
+  )
+}
+
+function isInterviewFollowUp(value: string) {
+  return /availability|communication|interview|assessment|confirm|verify|walkthrough|independent ownership/i.test(value)
+}
+
 function componentValues(criterion: EvidenceCriterion, keys: string[]) {
   const component = criterion.raw_component_assessment ?? {}
   return uniqueScreeningValues(keys.flatMap((key) => screeningValues(component[key])))
 }
 
 function criterionEvidenceFound(criterion: EvidenceCriterion) {
-  return uniqueScreeningValues([
+  return atomicScreeningValues([
     ...criterion.evidence_found,
     ...criterion.matched_terms,
     ...componentValues(criterion, ['supported_core_components', 'supported_preferred_components'])
   ])
 }
 
+function criterionEvidenceExcerpts(criterion: EvidenceCriterion) {
+  return proseScreeningValues([...criterion.evidence_found, ...criterion.evidence.map((evidence) => evidence.exact_text)], 2)
+}
+
 function criterionTransferableSignals(criterion: EvidenceCriterion) {
-  return componentValues(criterion, [
+  return atomicScreeningValues(componentValues(criterion, [
     'supported_adjacent_components',
     'source_declared_adjacent_components',
     'inferred_adjacent_components',
     'supported_controlled_contexts'
-  ])
+  ]))
 }
 
-function criterionReviewGaps(criterion: EvidenceCriterion) {
-  return uniqueScreeningValues([
+function criterionResumeNotConclusive(criterion: EvidenceCriterion) {
+  return atomicScreeningValues([
     ...criterion.missing_information,
     ...criterion.unmatched_terms,
-    ...criterion.verification_needed,
-    ...criterion.ambiguity,
     ...componentValues(criterion, [
       'missing_core_components',
       'missing_preferred_components',
       'missing_evaluation_dimensions'
     ])
-  ], 10)
+  ].filter((entry) => !isInterviewFollowUp(entry)), 8)
+}
+
+function criterionResumeNotConclusiveNotes(criterion: EvidenceCriterion) {
+  return proseScreeningValues([
+    ...criterion.missing_information,
+    ...criterion.unmatched_terms,
+    ...componentValues(criterion, [
+      'missing_core_components',
+      'missing_preferred_components',
+      'missing_evaluation_dimensions'
+    ])
+  ].filter((entry) => !isInterviewFollowUp(entry)), 2)
+}
+
+function criterionFollowUps(criterion: EvidenceCriterion) {
+  return atomicScreeningValues([
+    ...criterion.verification_needed,
+    ...criterion.ambiguity,
+    ...criterion.missing_information.filter(isInterviewFollowUp),
+    ...criterion.unmatched_terms.filter(isInterviewFollowUp)
+  ], 8)
+}
+
+function criterionFollowUpNotes(criterion: EvidenceCriterion) {
+  return proseScreeningValues([
+    ...criterion.verification_needed,
+    ...criterion.ambiguity,
+    ...criterion.missing_information.filter(isInterviewFollowUp),
+    ...criterion.unmatched_terms.filter(isInterviewFollowUp)
+  ], 2)
 }
 
 function humanizeScreeningText(value: string | null | undefined) {
@@ -1049,7 +1305,10 @@ function humanizeScreeningText(value: string | null | undefined) {
 function criterionHumanStatus(criterion: EvidenceCriterion) {
   const status = criterion.status.toLowerCase()
   if (status === 'met' || status === 'verified') return 'Verified'
-  if (status.includes('partial') || status.includes('adjacent')) return 'Transferable / adjacent'
+  if ((status.includes('partial') || status.includes('adjacent')) && criterionTransferableSignals(criterion).length) {
+    return 'Transferable / adjacent'
+  }
+  if (status.includes('partial') || status.includes('adjacent')) return 'Needs review'
   if (status === 'not_met' || status === 'not_found') return 'Not demonstrated in resume'
   return applicationStatusLabel(criterion.status, 'Needs review')
 }
@@ -1251,7 +1510,9 @@ onBeforeUnmount(() => {
             <h1 class="mt-2 text-2xl font-semibold text-ink-gray-9">Apply for {{ selectedJob.title }}</h1>
             <p class="mt-1 text-p-base text-ink-gray-6">No candidate account is required.</p>
           </div>
-          <TabButtons v-model="applicationStep" :options="applicationSteps" />
+          <div class="max-w-full overflow-x-auto pb-1">
+            <TabButtons v-model="applicationStep" :options="applicationSteps" />
+          </div>
           <form class="max-w-3xl space-y-5" @submit.prevent="submitPublicApplication">
             <section v-if="applicationStep === 'basic'" class="grid gap-4 sm:grid-cols-2">
               <FormControl v-model="applyForm.basic.position" label="Position" disabled />
@@ -1597,37 +1858,65 @@ onBeforeUnmount(() => {
               </p>
             </div>
           </div>
-          <List v-if="bulkBatches.length" :columns="isCompactViewport ? ['minmax(0,1fr)'] : ['minmax(0,1fr)', '15rem', '9rem', '10rem', '12rem']" :row-height="82">
+          <List
+            v-if="bulkBatches.length"
+            :columns="isCompactViewport ? ['minmax(0,1fr)'] : ['minmax(18rem,2fr)', 'minmax(12rem,1fr)', '8rem', '8rem', '8rem', '7rem']"
+            :row-height="96"
+          >
             <ListHeader class="hidden sm:grid">
               <ListHeaderCell>Batch</ListHeaderCell>
               <ListHeaderCell>Job / JD</ListHeaderCell>
               <ListHeaderCell>Created</ListHeaderCell>
               <ListHeaderCell>Resume count</ListHeaderCell>
               <ListHeaderCell>Status</ListHeaderCell>
+              <ListHeaderCell>Actions</ListHeaderCell>
             </ListHeader>
             <ListRow v-for="batch in bulkBatches" :key="batch.id" :value="batch.id" @click="openBulkBatch(batch.id)">
-              <ListCell>
-                <div class="py-2">
-                  <div class="truncate text-base-medium leading-5 text-ink-gray-8">{{ batch.title }}</div>
+              <ListCell class="min-w-0">
+                <div class="min-w-0 py-3 pr-3">
+                  <div class="line-clamp-2 break-words text-base-medium leading-5 text-ink-gray-8">{{ batch.title }}</div>
                   <div class="mt-1.5 text-sm leading-5 text-ink-gray-5">
                     {{ batch.accepted_count }} ready · {{ batch.duplicate_count }} duplicate{{ batch.duplicate_count === 1 ? '' : 's' }}
                   </div>
+                  <div class="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
+                    <StatusBadge :value="batch.status" />
+                    <Button
+                      v-if="['DRAFT', 'READY'].includes(batch.status)"
+                      label="Resume draft"
+                      variant="ghost"
+                      theme="gray"
+                      @click.stop="openBulkBatch(batch.id)"
+                    />
+                    <Button
+                      v-if="['DRAFT', 'READY'].includes(batch.status)"
+                      label="Discard"
+                      variant="ghost"
+                      theme="red"
+                      @click.stop="openBulkBatch(batch.id).then(discardBulkDraft)"
+                    />
+                    <Button
+                      v-if="['COMPLETED', 'FAILED'].includes(batch.status)"
+                      label="Archive"
+                      variant="ghost"
+                      theme="red"
+                      @click.stop="openBulkBatch(batch.id).then(archiveBulkScreening)"
+                    />
+                  </div>
                 </div>
               </ListCell>
-              <ListCell class="hidden sm:flex">{{ batch.job_title ?? stageLabel(batch.source_type) }}</ListCell>
+              <ListCell class="hidden min-w-0 sm:flex">
+                <span class="line-clamp-2 break-words leading-5">{{ batch.job_title ?? stageLabel(batch.source_type) }}</span>
+              </ListCell>
               <ListCell class="hidden sm:flex">{{ formatDate(batch.created_at) }}</ListCell>
               <ListCell class="hidden sm:flex">{{ batch.total_files }} supplied</ListCell>
               <ListCell class="hidden sm:flex">
-                <div class="flex items-center gap-2">
-                  <StatusBadge :value="batch.status" />
-                  <Button
-                    v-if="['DRAFT', 'READY'].includes(batch.status)"
-                    label="Resume Draft"
-                    variant="ghost"
-                    theme="gray"
-                    @click="openBulkBatch(batch.id)"
-                  />
-                </div>
+                <StatusBadge :value="batch.status" />
+              </ListCell>
+              <ListCell class="hidden sm:flex" @click.stop>
+                <Dropdown
+                  :options="bulkBatchActions(batch)"
+                  :button="{ label: 'More', icon: 'lucide-more-horizontal', variant: 'ghost', theme: 'gray' }"
+                />
               </ListCell>
             </ListRow>
           </List>
@@ -1642,7 +1931,7 @@ onBeforeUnmount(() => {
             </div>
             <Button
               v-if="selectedBulkBatch && ['DRAFT', 'READY'].includes(selectedBulkBatch.status)"
-              label="Discard Draft"
+              label="Discard screening"
               icon-left="lucide-trash-2"
               variant="subtle"
               theme="red"
@@ -1696,6 +1985,40 @@ onBeforeUnmount(() => {
                       <ListRow value="preferred"><ListCell><span class="text-base-medium">Preferred skills</span><p class="mt-1 text-p-sm text-ink-gray-6">{{ structuredJdList('preferred_skills').join(', ') || 'Not extracted' }}</p></ListCell></ListRow>
                     </List>
                   </div>
+                  <FormControl
+                    v-if="bulkDesignationOptions.length > 1"
+                    v-model="bulkTargetDesignation"
+                    type="select"
+                    label="Screen candidates for"
+                    :options="[{ label: 'Choose designation', value: '' }, ...bulkDesignationOptions]"
+                    required
+                  />
+                  <Alert
+                    v-if="bulkPreflightIssues.length"
+                    title="Criteria need review before screening"
+                    description="Resolve the items below, then confirm criteria again."
+                    theme="amber"
+                  />
+                  <List v-if="bulkPreflightIssues.length" :columns="['10rem', 'minmax(0,1fr)', '10rem']" :row-height="74">
+                    <ListHeader class="hidden sm:grid">
+                      <ListHeaderCell>Issue</ListHeaderCell>
+                      <ListHeaderCell>Required resolution</ListHeaderCell>
+                      <ListHeaderCell>Reference</ListHeaderCell>
+                    </ListHeader>
+                    <ListRow v-for="(issue, index) in bulkPreflightIssues" :key="`${issue.type}-${index}`" :value="`${issue.type}-${index}`">
+                      <ListCell><StatusBadge :value="issue.type ?? 'review'" /></ListCell>
+                      <ListCell><p class="py-2 text-p-sm leading-5 text-ink-gray-7">{{ issue.description }}</p></ListCell>
+                      <ListCell class="hidden sm:flex">{{ issue.requirement_id ?? issue.criterion_id ?? issue.field ?? 'JD' }}</ListCell>
+                    </ListRow>
+                  </List>
+                  <Button
+                    v-if="canReconcileBulkCriteria"
+                    label="Apply required criterion fixes"
+                    variant="subtle"
+                    theme="gray"
+                    icon-left="lucide-wrench"
+                    @click="reconcileAdHocBulkCriteria"
+                  />
                   <List :columns="['minmax(0,1fr)', '8rem']" :row-height="72">
                     <ListRow v-for="criterion in selectedBulkCriteria" :key="String(criterion.criterion_id)" :value="String(criterion.criterion_id)">
                       <ListCell>
@@ -1796,12 +2119,23 @@ onBeforeUnmount(() => {
               <StatusBadge :value="selectedBulkBatch.status" />
               <Button label="Refresh" variant="subtle" theme="gray" icon-left="lucide-refresh-cw" @click="openBulkBatch(selectedBulkBatch.id, false)" />
               <Button
-                v-if="selectedBulkBatch.status === 'COMPLETED'"
+                v-if="['COMPLETED', 'FAILED'].includes(selectedBulkBatch.status)"
                 label="Export Results"
                 variant="subtle"
                 theme="gray"
                 icon-left="lucide-download"
                 @click="downloadBulkExport"
+              />
+              <Tooltip
+                v-if="['QUEUED', 'RUNNING'].includes(selectedBulkBatch.status)"
+                text="Cancellation is not supported for queued or running screening batches."
+              >
+                <Button label="Cancel screening" variant="subtle" theme="gray" icon-left="lucide-ban" disabled />
+              </Tooltip>
+              <Dropdown
+                v-if="selectedBulkMoreActions().length"
+                :options="selectedBulkMoreActions()"
+                :button="{ label: 'More', icon: 'lucide-more-horizontal', variant: 'ghost', theme: 'gray' }"
               />
             </div>
           </div>
@@ -1817,6 +2151,12 @@ onBeforeUnmount(() => {
             {{ bulkResultSummary.unsupported }} unsupported ·
             {{ bulkResultSummary.technicalFailures }} technical failure{{ bulkResultSummary.technicalFailures === 1 ? '' : 's' }}
           </p>
+          <Alert
+            v-if="selectedBulkBatch.failure_message"
+            title="Technical processing issue"
+            :description="selectedBulkBatch.failure_message"
+            theme="amber"
+          />
 
           <section v-if="['QUEUED', 'RUNNING'].includes(selectedBulkBatch.status)" class="space-y-3">
             <Alert :title="`Screening ${selectedBulkBatch.accepted_count} resumes`" :description="bulkProgressText" theme="blue" />
@@ -1970,45 +2310,88 @@ onBeforeUnmount(() => {
                     </div>
                     <Badge :label="criterionHumanStatus(criterion)" variant="subtle" theme="gray" class="self-start" />
                   </div>
-                  <div class="grid gap-4 md:grid-cols-3">
-                    <div class="space-y-2">
-                      <div class="text-sm font-medium text-ink-gray-7">Evidence found</div>
-                      <div v-if="criterionEvidenceFound(criterion).length" class="flex flex-wrap gap-1.5">
-                        <Badge
-                          v-for="term in criterionEvidenceFound(criterion)"
-                          :key="term"
-                          :label="term"
-                          variant="subtle"
-                          theme="green"
-                        />
+                  <div class="space-y-4">
+                    <div class="grid gap-4 lg:grid-cols-2">
+                      <div class="space-y-2">
+                        <div class="text-sm font-medium text-ink-gray-7">Evidence found</div>
+                        <div v-if="criterionEvidenceFound(criterion).length" class="flex flex-wrap gap-1.5">
+                          <Badge
+                            v-for="term in criterionEvidenceFound(criterion)"
+                            :key="term"
+                            :label="term"
+                            variant="subtle"
+                            theme="green"
+                          />
+                        </div>
+                        <p v-else class="text-p-sm leading-5 text-ink-gray-5">No direct resume evidence recorded.</p>
+                        <div v-if="criterionEvidenceExcerpts(criterion).length" class="space-y-2">
+                          <p
+                            v-for="excerpt in criterionEvidenceExcerpts(criterion)"
+                            :key="excerpt"
+                            class="border-l border-outline-gray-2 pl-3 text-p-sm leading-5 text-ink-gray-7"
+                          >
+                            {{ excerpt }}
+                          </p>
+                        </div>
                       </div>
-                      <p v-else class="text-p-sm leading-5 text-ink-gray-5">No direct resume evidence recorded.</p>
+                      <div v-if="criterionTransferableSignals(criterion).length" class="space-y-2">
+                        <div class="text-sm font-medium text-ink-gray-7">Related experience</div>
+                        <div class="flex flex-wrap gap-1.5">
+                          <Badge
+                            v-for="term in criterionTransferableSignals(criterion)"
+                            :key="term"
+                            :label="term"
+                            variant="subtle"
+                            theme="blue"
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div class="space-y-2">
-                      <div class="text-sm font-medium text-ink-gray-7">Not demonstrated / follow-up</div>
-                      <div v-if="criterionReviewGaps(criterion).length" class="flex flex-wrap gap-1.5">
-                        <Badge
-                          v-for="term in criterionReviewGaps(criterion)"
-                          :key="term"
-                          :label="humanizeScreeningText(term)"
-                          variant="subtle"
-                          theme="amber"
-                        />
+                    <div class="grid gap-4 lg:grid-cols-2">
+                      <div
+                        v-if="criterionResumeNotConclusive(criterion).length || criterionResumeNotConclusiveNotes(criterion).length"
+                        class="space-y-2"
+                      >
+                        <div class="text-sm font-medium text-ink-gray-7">Resume not conclusive</div>
+                        <div v-if="criterionResumeNotConclusive(criterion).length" class="flex flex-wrap gap-1.5">
+                          <Badge
+                            v-for="term in criterionResumeNotConclusive(criterion)"
+                            :key="term"
+                            :label="humanizeScreeningText(term)"
+                            variant="subtle"
+                            theme="amber"
+                          />
+                        </div>
+                        <p
+                          v-for="note in criterionResumeNotConclusiveNotes(criterion)"
+                          :key="note"
+                          class="text-p-sm leading-5 text-ink-gray-6"
+                        >
+                          {{ note }}
+                        </p>
                       </div>
-                      <p v-else class="text-p-sm leading-5 text-ink-gray-5">No follow-up items recorded.</p>
-                    </div>
-                    <div class="space-y-2">
-                      <div class="text-sm font-medium text-ink-gray-7">Transferable / adjacent signal</div>
-                      <div v-if="criterionTransferableSignals(criterion).length" class="flex flex-wrap gap-1.5">
-                        <Badge
-                          v-for="term in criterionTransferableSignals(criterion)"
-                          :key="term"
-                          :label="term"
-                          variant="subtle"
-                          theme="blue"
-                        />
+                      <div
+                        v-if="criterionFollowUps(criterion).length || criterionFollowUpNotes(criterion).length"
+                        class="space-y-2"
+                      >
+                        <div class="text-sm font-medium text-ink-gray-7">Interview / assessment follow-up</div>
+                        <div v-if="criterionFollowUps(criterion).length" class="flex flex-wrap gap-1.5">
+                          <Badge
+                            v-for="term in criterionFollowUps(criterion)"
+                            :key="term"
+                            :label="humanizeScreeningText(term)"
+                            variant="subtle"
+                            theme="amber"
+                          />
+                        </div>
+                        <p
+                          v-for="note in criterionFollowUpNotes(criterion)"
+                          :key="note"
+                          class="text-p-sm leading-5 text-ink-gray-6"
+                        >
+                          {{ note }}
+                        </p>
                       </div>
-                      <p v-else class="text-p-sm leading-5 text-ink-gray-5">No adjacent signal recorded.</p>
                     </div>
                   </div>
                   <details v-if="criterion.evidence.length" class="border-t border-outline-gray-1 pt-3">
@@ -2100,45 +2483,88 @@ onBeforeUnmount(() => {
               </div>
               <Badge :label="criterionHumanStatus(criterion)" variant="subtle" theme="gray" class="self-start" />
             </div>
-            <div class="grid gap-4 md:grid-cols-3">
-              <div class="space-y-2">
-                <div class="text-sm font-medium text-ink-gray-7">Evidence found</div>
-                <div v-if="criterionEvidenceFound(criterion).length" class="flex flex-wrap gap-1.5">
-                  <Badge
-                    v-for="term in criterionEvidenceFound(criterion)"
-                    :key="term"
-                    :label="term"
-                    variant="subtle"
-                    theme="green"
-                  />
+            <div class="space-y-4">
+              <div class="grid gap-4 lg:grid-cols-2">
+                <div class="space-y-2">
+                  <div class="text-sm font-medium text-ink-gray-7">Evidence found</div>
+                  <div v-if="criterionEvidenceFound(criterion).length" class="flex flex-wrap gap-1.5">
+                    <Badge
+                      v-for="term in criterionEvidenceFound(criterion)"
+                      :key="term"
+                      :label="term"
+                      variant="subtle"
+                      theme="green"
+                    />
+                  </div>
+                  <p v-else class="text-p-sm leading-5 text-ink-gray-5">No direct resume evidence recorded.</p>
+                  <div v-if="criterionEvidenceExcerpts(criterion).length" class="space-y-2">
+                    <p
+                      v-for="excerpt in criterionEvidenceExcerpts(criterion)"
+                      :key="excerpt"
+                      class="border-l border-outline-gray-2 pl-3 text-p-sm leading-5 text-ink-gray-7"
+                    >
+                      {{ excerpt }}
+                    </p>
+                  </div>
                 </div>
-                <p v-else class="text-p-sm leading-5 text-ink-gray-5">No direct resume evidence recorded.</p>
+                <div v-if="criterionTransferableSignals(criterion).length" class="space-y-2">
+                  <div class="text-sm font-medium text-ink-gray-7">Related experience</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <Badge
+                      v-for="term in criterionTransferableSignals(criterion)"
+                      :key="term"
+                      :label="term"
+                      variant="subtle"
+                      theme="blue"
+                    />
+                  </div>
+                </div>
               </div>
-              <div class="space-y-2">
-                <div class="text-sm font-medium text-ink-gray-7">Not demonstrated / follow-up</div>
-                <div v-if="criterionReviewGaps(criterion).length" class="flex flex-wrap gap-1.5">
-                  <Badge
-                    v-for="term in criterionReviewGaps(criterion)"
-                    :key="term"
-                    :label="humanizeScreeningText(term)"
-                    variant="subtle"
-                    theme="amber"
-                  />
+              <div class="grid gap-4 lg:grid-cols-2">
+                <div
+                  v-if="criterionResumeNotConclusive(criterion).length || criterionResumeNotConclusiveNotes(criterion).length"
+                  class="space-y-2"
+                >
+                  <div class="text-sm font-medium text-ink-gray-7">Resume not conclusive</div>
+                  <div v-if="criterionResumeNotConclusive(criterion).length" class="flex flex-wrap gap-1.5">
+                    <Badge
+                      v-for="term in criterionResumeNotConclusive(criterion)"
+                      :key="term"
+                      :label="humanizeScreeningText(term)"
+                      variant="subtle"
+                      theme="amber"
+                    />
+                  </div>
+                  <p
+                    v-for="note in criterionResumeNotConclusiveNotes(criterion)"
+                    :key="note"
+                    class="text-p-sm leading-5 text-ink-gray-6"
+                  >
+                    {{ note }}
+                  </p>
                 </div>
-                <p v-else class="text-p-sm leading-5 text-ink-gray-5">No follow-up items recorded.</p>
-              </div>
-              <div class="space-y-2">
-                <div class="text-sm font-medium text-ink-gray-7">Transferable / adjacent signal</div>
-                <div v-if="criterionTransferableSignals(criterion).length" class="flex flex-wrap gap-1.5">
-                  <Badge
-                    v-for="term in criterionTransferableSignals(criterion)"
-                    :key="term"
-                    :label="term"
-                    variant="subtle"
-                    theme="blue"
-                  />
+                <div
+                  v-if="criterionFollowUps(criterion).length || criterionFollowUpNotes(criterion).length"
+                  class="space-y-2"
+                >
+                  <div class="text-sm font-medium text-ink-gray-7">Interview / assessment follow-up</div>
+                  <div v-if="criterionFollowUps(criterion).length" class="flex flex-wrap gap-1.5">
+                    <Badge
+                      v-for="term in criterionFollowUps(criterion)"
+                      :key="term"
+                      :label="humanizeScreeningText(term)"
+                      variant="subtle"
+                      theme="amber"
+                    />
+                  </div>
+                  <p
+                    v-for="note in criterionFollowUpNotes(criterion)"
+                    :key="note"
+                    class="text-p-sm leading-5 text-ink-gray-6"
+                  >
+                    {{ note }}
+                  </p>
                 </div>
-                <p v-else class="text-p-sm leading-5 text-ink-gray-5">No adjacent signal recorded.</p>
               </div>
             </div>
             <details v-if="criterion.evidence.length" class="border-t border-outline-gray-1 pt-3">

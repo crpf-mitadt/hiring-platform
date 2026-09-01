@@ -13,6 +13,7 @@ from app.schemas.bulk_screening import (
 )
 from app.services.bulk_screening import (
     add_resumes_to_batch,
+    archive_batch,
     batch_to_read,
     batch_to_summary,
     confirm_ad_hoc_criteria,
@@ -21,6 +22,9 @@ from app.services.bulk_screening import (
     discard_draft_batch,
     get_batch,
     list_batches,
+    reconcile_ad_hoc_criteria,
+    resume_failed_batch,
+    safe_bulk_failure_message,
     start_batch,
     supported_bulk_formats,
 )
@@ -68,7 +72,7 @@ def api_export_bulk_batch(db: DbDep, actor: ActorDep, batch_id: str):
                 item.status.value,
                 item.concise_reason,
                 item.failure_code,
-                item.failure_message,
+                safe_bulk_failure_message(item.failure_code, item.failure_message),
             ]
         )
     return Response(
@@ -110,9 +114,21 @@ def api_confirm_ad_hoc_bulk_criteria(
     data: BulkCriteriaConfirmRequest,
 ):
     if data.confirmed:
-        batch = confirm_ad_hoc_criteria(db, actor, batch_id)
+        batch = confirm_ad_hoc_criteria(db, actor, batch_id, target_designation=data.target_designation)
     else:
         batch = get_batch(db, actor, batch_id)
+    db.commit()
+    return batch_to_read(batch)
+
+
+@router.post("/batches/{batch_id}/reconcile-criteria", response_model=BulkScreeningBatchRead)
+def api_reconcile_ad_hoc_bulk_criteria(
+    db: DbDep,
+    actor: ActorDep,
+    batch_id: str,
+    data: BulkCriteriaConfirmRequest,
+):
+    batch = reconcile_ad_hoc_criteria(db, actor, batch_id, target_designation=data.target_designation)
     db.commit()
     return batch_to_read(batch)
 
@@ -133,6 +149,20 @@ def api_add_bulk_resumes(
 @router.post("/batches/{batch_id}/start", response_model=BulkScreeningBatchRead)
 def api_start_bulk_screening_batch(db: DbDep, actor: ActorDep, batch_id: str):
     batch = start_batch(db, actor, batch_id)
+    db.commit()
+    return batch_to_read(batch)
+
+
+@router.post("/batches/{batch_id}/archive", response_model=BulkScreeningBatchRead)
+def api_archive_bulk_screening_batch(db: DbDep, actor: ActorDep, batch_id: str):
+    batch = archive_batch(db, actor, batch_id)
+    db.commit()
+    return batch_to_read(batch)
+
+
+@router.post("/batches/{batch_id}/resume", response_model=BulkScreeningBatchRead)
+def api_resume_failed_bulk_screening_batch(db: DbDep, actor: ActorDep, batch_id: str):
+    batch = resume_failed_batch(db, actor, batch_id)
     db.commit()
     return batch_to_read(batch)
 

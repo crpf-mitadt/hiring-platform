@@ -4,9 +4,11 @@ import threading
 import zipfile
 from pathlib import Path
 
-from app.models import BulkScreeningItem, BulkScreeningWorkItem
+from app.models import BulkScreeningItem, BulkScreeningWorkItem, Job, JobRubricVersion
 from app.services.bulk_screening import process_next_bulk_screening_jobs
+from app.services.rubric_utils import rubric_payload_hash
 from app.services.screening import ProviderExecutionResult
+from app.services.structured_jd_contract import validate_structured_jd_for_engine
 from app.worker import run_pending_screening_jobs
 from sqlalchemy import select
 
@@ -57,6 +59,84 @@ def _assert_no_score_keys(payload):
     elif isinstance(payload, list):
         for item in payload:
             _assert_no_score_keys(item)
+
+
+def _multi_designation_structured_jd():
+    return {
+        "schema_version": "structured-jd-v1",
+        "job_id": "multi-rank",
+        "source_document_id": "jd",
+        "extraction_method": "live_gemma",
+        "job_title": "Assistant Professor, Associate Professor & Professor",
+        "department": "Faculty",
+        "role_summary": "Faculty appointment across designation-specific tracks.",
+        "mandatory_requirements": [
+            {
+                "requirement_id": "req_002",
+                "category": "experience",
+                "description": "minimum 2 years (Assistant Professor)",
+                "requirement_type": "minimum",
+                "mandatory": True,
+                "preferred": False,
+                "minimum_value": 2,
+                "unit": "years",
+            },
+            {
+                "requirement_id": "req_003",
+                "category": "experience",
+                "description": "minimum 8 years (Associate Professor)",
+                "requirement_type": "minimum",
+                "mandatory": True,
+                "preferred": False,
+                "minimum_value": 8,
+                "unit": "years",
+            },
+            {
+                "requirement_id": "req_004",
+                "category": "experience",
+                "description": "minimum 10 years (Professor)",
+                "requirement_type": "minimum",
+                "mandatory": True,
+                "preferred": False,
+                "minimum_value": 10,
+                "unit": "years",
+            },
+            {
+                "requirement_id": "req_007",
+                "category": "research",
+                "description": "2+ papers in Scopus/WoS (Assistant Professor)",
+                "requirement_type": "minimum",
+                "mandatory": True,
+                "preferred": False,
+            },
+        ],
+        "preferred_requirements": [],
+        "required_skills": ["Teaching", "Research"],
+        "preferred_skills": [],
+        "minimum_experience_months": 0,
+        "domain": "Faculty",
+        "seniority": "",
+        "scoring_rubric": [
+            {
+                "criterion_id": "crit_002",
+                "name": "Relevant Experience",
+                "category": "experience",
+                "description": "Designation-scoped experience threshold",
+                "weight": 60,
+                "mandatory": True,
+                "requirement_ids": ["req_002", "req_003", "req_004"],
+            },
+            {
+                "criterion_id": "crit_004",
+                "name": "Research & Innovation",
+                "category": "research",
+                "description": "Designation-scoped research output",
+                "weight": 40,
+                "mandatory": True,
+                "requirement_ids": ["req_007"],
+            },
+        ],
+    }
 
 
 def test_bulk_screening_denies_candidate_and_anonymous(client, users, published_job):
@@ -431,6 +511,76 @@ def test_bulk_screening_discards_unstarted_draft(client, users, published_job):
     assert reopened.status_code == 404
 
 
+def test_bulk_screening_archives_terminal_batch_and_excludes_default_history(client, db_session, users, published_job):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(client, users["recruiter"]["id"], created.json()["id"], [_resume_file("meets.pdf")])
+    assert _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"]).status_code == 200
+
+    while process_next_bulk_screening_jobs(db_session):
+        db_session.commit()
+
+    archive = client.post(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}/archive",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    history = client.get("/api/bulk-screening/batches", headers={"X-Actor-Id": users["recruiter"]["id"]})
+    direct = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+
+    assert archive.status_code == 200, archive.text
+    assert archive.json()["archived_at"] is not None
+    assert archive.json()["archived_by_id"] == users["recruiter"]["id"]
+    assert uploaded.json()["id"] not in {batch["id"] for batch in history.json()}
+    assert direct.status_code == 200
+    assert direct.json()["archived_at"] is not None
+
+
+def test_bulk_screening_rejects_active_archive_and_delete(client, users, published_job):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(client, users["recruiter"]["id"], created.json()["id"], [_resume_file("meets.pdf")])
+    started = _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"])
+    assert started.status_code == 200
+
+    archive = client.post(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}/archive",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    discard = client.delete(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+
+    assert archive.status_code == 409
+    assert discard.status_code == 409
+
+
+def test_bulk_screening_existing_job_preflight_blocks_invalid_structured_jd(client, users, published_job, db_session):
+    job = db_session.get(Job, published_job["id"])
+    version = db_session.get(JobRubricVersion, job.rubrics[0].current_version_id)
+    version.structured_jd_payload = {
+        "schema_version": "structured-jd-v1",
+        "job_id": job.id,
+        "source_document_id": job.jd_document_id or "jd",
+        "extraction_method": "development_manual_seed",
+        "job_title": job.title,
+        "department": job.department.name,
+        "mandatory_requirements": ["not canonical"],
+        "scoring_rubric": [{"criterion_id": "bad", "name": "Bad", "category": "invalid_category", "weight": 100}],
+        "seed_revision": "legacy",
+    }
+    version.criteria = version.structured_jd_payload["scoring_rubric"]
+    version.approved_payload_sha256 = rubric_payload_hash(version)
+    db_session.commit()
+
+    response = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "INVALID_SCREENING_CRITERIA"
+    assert response.json()["issues"]
+
+
 def test_bulk_screening_blocks_unlinked_mandatory_ad_hoc_criteria(client, monkeypatch, users):
     monkeypatch.setattr(
         "app.services.bulk_screening._generate_ad_hoc_structured_jd",
@@ -462,6 +612,248 @@ def test_bulk_screening_blocks_unlinked_mandatory_ad_hoc_criteria(client, monkey
     )
 
     assert confirmed.status_code == 409
+
+
+def test_bulk_screening_returns_structured_ad_hoc_requirement_conflicts(client, monkeypatch, users):
+    monkeypatch.setattr(
+        "app.services.bulk_screening._generate_ad_hoc_structured_jd",
+        lambda _document: {
+            "schema_version": "structured-jd-v1",
+            "job_id": "adhoc",
+            "source_document_id": "jd",
+            "extraction_method": "live_gemma",
+            "job_title": "Assistant Professor",
+            "department": "Faculty",
+            "mandatory_requirements": [
+                {
+                    "requirement_id": "req_007",
+                    "category": "research",
+                    "description": "2+ papers in Scopus/WoS (Assistant Professor)",
+                    "requirement_type": "minimum",
+                    "mandatory": True,
+                    "preferred": False,
+                }
+            ],
+            "preferred_requirements": [],
+            "scoring_rubric": [
+                {
+                    "criterion_id": "crit_004",
+                    "name": "Research & Innovation",
+                    "category": "research",
+                    "description": "Research output",
+                    "weight": 100,
+                    "mandatory": False,
+                    "requirement_ids": ["req_007"],
+                }
+            ],
+        },
+    )
+    created = client.post(
+        "/api/bulk-screening/batches/ad-hoc-jd",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        files={"jd_file": ("faculty-jd.txt", b"research", "text/plain")},
+    )
+    confirmed = client.post(
+        f"/api/bulk-screening/batches/{created.json()['id']}/confirm-criteria",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        json={"confirmed": True},
+    )
+
+    assert confirmed.status_code == 409
+    assert confirmed.json()["code"] == "INVALID_SCREENING_CRITERIA"
+    assert any(issue["type"] == "MANDATORY_LINK_CONFLICT" for issue in confirmed.json()["issues"])
+
+    reconciled = client.post(
+        f"/api/bulk-screening/batches/{created.json()['id']}/reconcile-criteria",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        json={"confirmed": True},
+    )
+
+    assert reconciled.status_code == 200, reconciled.text
+    criterion = reconciled.json()["criteria_snapshot"][0]
+    assert criterion["criterion_id"] == "crit_004"
+    assert criterion["mandatory"] is True
+
+
+def test_bulk_screening_requires_target_designation_for_multi_rank_ad_hoc_jd(client, monkeypatch, users):
+    jd_payload = _multi_designation_structured_jd()
+    monkeypatch.setattr("app.services.bulk_screening._generate_ad_hoc_structured_jd", lambda _document: jd_payload)
+    created = client.post(
+        "/api/bulk-screening/batches/ad-hoc-jd",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        files={"jd_file": ("faculty-jd.txt", b"assistant associate professor", "text/plain")},
+    )
+
+    missing_target = client.post(
+        f"/api/bulk-screening/batches/{created.json()['id']}/confirm-criteria",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        json={"confirmed": True},
+    )
+    assistant = client.post(
+        f"/api/bulk-screening/batches/{created.json()['id']}/confirm-criteria",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+        json={"confirmed": True, "target_designation": "Assistant Professor"},
+    )
+
+    assert missing_target.status_code == 409
+    assert missing_target.json()["code"] == "TARGET_DESIGNATION_REQUIRED"
+    assert assistant.status_code == 200, assistant.text
+    assert assistant.json()["target_designation"] == "Assistant Professor"
+
+
+def test_designation_filtered_structured_jd_does_not_require_all_rank_thresholds():
+    assistant = validate_structured_jd_for_engine(
+        _multi_designation_structured_jd(),
+        target_designation="Assistant Professor",
+    ).canonical_payload
+    professor = validate_structured_jd_for_engine(
+        _multi_designation_structured_jd(),
+        target_designation="Professor",
+    ).canonical_payload
+
+    assistant_text = json.dumps(assistant).lower()
+    professor_text = json.dumps(professor).lower()
+    assert "minimum 2 years" in assistant_text
+    assert "minimum 8 years" not in assistant_text
+    assert "minimum 10 years" not in assistant_text
+    assert "minimum 10 years" in professor_text
+    assert "2+ papers in scopus/wos" not in professor_text
+    assert sum(criterion["weight"] for criterion in professor["scoring_rubric"]) == 100
+
+
+def test_bulk_screening_systemic_failure_stops_remaining_pending_work(client, db_session, users, published_job):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(
+        client,
+        users["recruiter"]["id"],
+        created.json()["id"],
+        [
+            _resume_file("first.pdf", b"%PDF-1.4 first resume evidence"),
+            _resume_file("second.pdf", b"%PDF-1.4 second resume evidence"),
+        ],
+    )
+    assert _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"]).status_code == 200
+
+    class InvalidJDProvider:
+        name = "invalid-jd"
+        engine_version = "test"
+
+        def evaluate(self, _item):
+            from app.services.screening import EngineProviderError
+
+            raise EngineProviderError("INVALID_STRUCTURED_JD", "StructuredJD validation failed at source path")
+
+    assert process_next_bulk_screening_jobs(db_session, provider=InvalidJDProvider()) == 1
+    db_session.commit()
+    assert process_next_bulk_screening_jobs(db_session, provider=InvalidJDProvider()) == 0
+    refreshed = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    ).json()
+
+    assert refreshed["status"] == "FAILED"
+    assert refreshed["failure_code"] == "INVALID_STRUCTURED_JD"
+    assert refreshed["failure_message"] == "Screening criteria are not compatible with the current screening engine."
+    assert [item["status"] for item in refreshed["items"]].count("PENDING") == 1
+
+
+def test_bulk_screening_resume_requeues_retryable_failed_items(client, db_session, users, published_job):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(client, users["recruiter"]["id"], created.json()["id"], [_resume_file("technical.pdf")])
+    assert _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"]).status_code == 200
+
+    class FailingProvider:
+        name = "failing-provider"
+        engine_version = "test"
+
+        def evaluate(self, _item):
+            raise RuntimeError("synthetic provider failure")
+
+    while process_next_bulk_screening_jobs(db_session, provider=FailingProvider()):
+        db_session.commit()
+
+    failed = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    ).json()
+    assert failed["status"] == "FAILED"
+    assert failed["items"][0]["status"] == "FAILED"
+
+    resumed = client.post(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}/resume",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+
+    work_item = db_session.scalar(select(BulkScreeningWorkItem))
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "QUEUED"
+    assert resumed.json()["items"][0]["status"] == "PENDING"
+    assert work_item.status.value == "PENDING"
+    assert work_item.attempts == 0
+
+
+def test_bulk_screening_resume_preserves_completed_results_and_pending_work(
+    client,
+    db_session,
+    users,
+    published_job,
+):
+    created = _create_existing_batch(client, users["recruiter"]["id"], published_job["id"])
+    uploaded = _upload_resumes(
+        client,
+        users["recruiter"]["id"],
+        created.json()["id"],
+        [
+            _resume_file("completed.pdf", b"%PDF-1.4 completed resume evidence"),
+            _resume_file("invalid-jd.pdf", b"%PDF-1.4 invalid jd trigger"),
+            _resume_file("pending.pdf", b"%PDF-1.4 pending resume evidence"),
+        ],
+    )
+    assert _start_batch(client, users["recruiter"]["id"], uploaded.json()["id"]).status_code == 200
+
+    class MixedSystemicProvider:
+        name = "mixed-systemic"
+        engine_version = "test"
+
+        def evaluate(self, item):
+            if item.original_filename == "completed.pdf":
+                return ProviderExecutionResult(
+                    provider=self.name,
+                    provider_engine_version=self.engine_version,
+                    payload={
+                        "artifact_schema_version": "candidate-evaluation-v1",
+                        "eligibility": {"status": "PASS"},
+                        "criterion_evaluations": [],
+                        "evidence_completeness": 1,
+                    },
+                )
+            from app.services.screening import EngineProviderError
+
+            raise EngineProviderError("INVALID_STRUCTURED_JD", "StructuredJD validation failed")
+
+    assert process_next_bulk_screening_jobs(db_session, provider=MixedSystemicProvider(), limit=1) == 1
+    db_session.commit()
+    assert process_next_bulk_screening_jobs(db_session, provider=MixedSystemicProvider(), limit=1) == 1
+    db_session.commit()
+
+    failed = client.get(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    ).json()
+    assert failed["status"] == "FAILED"
+    assert [item["status"] for item in failed["items"]] == ["COMPLETED", "FAILED", "PENDING"]
+
+    work_item_count_before = len(list(db_session.scalars(select(BulkScreeningWorkItem))))
+    resumed = client.post(
+        f"/api/bulk-screening/batches/{uploaded.json()['id']}/resume",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    work_item_count_after = len(list(db_session.scalars(select(BulkScreeningWorkItem))))
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "QUEUED"
+    assert [item["status"] for item in resumed.json()["items"]] == ["COMPLETED", "PENDING", "PENDING"]
+    assert work_item_count_after == work_item_count_before
 
 
 def test_bulk_screening_candidate_name_maps_from_structured_resume_path(

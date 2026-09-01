@@ -1,5 +1,7 @@
 import json
+import sys
 from datetime import timedelta
+from pathlib import Path
 
 from app import seed
 from app.core.config import get_settings
@@ -106,6 +108,15 @@ def _payload_text(payload: dict) -> str:
     return json.dumps(values, sort_keys=True).lower()
 
 
+def _engine_structured_jd_model():
+    engine_src = (Path(__file__).resolve().parents[5] / "hiring-screening-engine" / "src").resolve()
+    if str(engine_src) not in sys.path:
+        sys.path.insert(0, str(engine_src))
+    from chandra_eval.schemas.jd import StructuredJD
+
+    return StructuredJD
+
+
 def test_demo_rubric_provider_marker_fits_model_constraint():
     proposed_by_column = JobRubricVersion.__table__.columns["proposed_by"]
 
@@ -126,7 +137,7 @@ def test_full_stack_seed_payload_matches_current_vacancy_without_faculty_contami
 
     assert payload["domain"] == "Full-stack web and application development"
     assert payload["minimum_experience_months"] == 24
-    assert payload["maximum_experience_months"] == 36
+    assert version.engine_mapping["platform_metadata"]["maximum_experience_months"] == 36
     for required in [
         "PHP",
         "Laravel",
@@ -188,8 +199,9 @@ def test_faculty_seed_payloads_keep_academic_teaching_and_research_requirements(
         version = _current_version(db_session, title)
         payload = version.structured_jd_payload
         text = _payload_text(payload)
-        assert payload["contains_teaching"] is True
-        assert payload["contains_student_facing"] is True
+        metadata = version.engine_mapping["platform_metadata"]
+        assert metadata["contains_teaching"] is True
+        assert metadata["contains_student_facing"] is True
         assert "teaching" in text
         assert "research" in text
         assert "academic" in text
@@ -218,6 +230,7 @@ def test_all_seeded_current_versions_are_approved_hashed_and_coherent(
         assert version.structured_jd_payload["job_title"] == vacancy["title"]
         assert version.structured_jd_payload["department"] == vacancy["department"]
         assert version.criteria == version.structured_jd_payload["scoring_rubric"]
+        _engine_structured_jd_model().model_validate(version.structured_jd_payload)
         assert version.approved_payload_sha256 == rubric_payload_hash(version)
         assert {criterion["criterion_id"] for criterion in version.criteria} == {
             criterion["criterion_id"] for criterion in vacancy["criteria"]
@@ -234,9 +247,11 @@ def test_non_teaching_seed_payloads_do_not_get_faculty_only_requirements(
 
     for title in ["Content Writer", "Full Stack Developer"]:
         payload = _current_version(db_session, title).structured_jd_payload
+        version = _current_version(db_session, title)
+        metadata = version.engine_mapping["platform_metadata"]
         text = _payload_text(payload)
-        assert payload["contains_teaching"] is False
-        assert payload["contains_student_facing"] is False
+        assert metadata["contains_teaching"] is False
+        assert metadata["contains_student_facing"] is False
         for forbidden in ["teaching", "student-facing", "student facing", "academic journal", "research papers"]:
             assert forbidden not in text
 

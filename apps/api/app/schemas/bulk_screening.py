@@ -20,6 +20,7 @@ class BulkSupportedFormatsRead(ApiModel):
 
 class BulkCriteriaConfirmRequest(ApiModel):
     confirmed: bool = True
+    target_designation: str | None = None
 
 
 class BulkScreeningEvidenceRead(ApiModel):
@@ -94,6 +95,7 @@ class BulkScreeningBatchRead(ApiModel):
     ad_hoc_structured_jd: dict | None
     ad_hoc_structured_jd_sha256: str | None
     criteria_snapshot: list[dict]
+    target_designation: str | None
     criteria_confirmed_by_id: str | None
     criteria_confirmed_at: datetime | None
     title: str
@@ -104,8 +106,12 @@ class BulkScreeningBatchRead(ApiModel):
     unsupported_count: int
     completed_count: int
     failed_count: int
+    failure_code: str | None
+    failure_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
+    archived_at: datetime | None
+    archived_by_id: str | None
     created_at: datetime
     updated_at: datetime
     items: list[BulkScreeningItemRead] = []
@@ -118,6 +124,7 @@ class BulkScreeningBatchSummaryRead(ApiModel):
     source_type: BulkScreeningSourceType
     job_id: str | None
     rubric_version_id: str | None
+    target_designation: str | None
     title: str
     status: BulkScreeningBatchStatus
     total_files: int
@@ -126,6 +133,10 @@ class BulkScreeningBatchSummaryRead(ApiModel):
     unsupported_count: int
     completed_count: int
     failed_count: int
+    failure_code: str | None
+    failure_message: str | None
     created_at: datetime
     completed_at: datetime | None
+    archived_at: datetime | None
+    archived_by_id: str | None
     job_title: str | None = None
