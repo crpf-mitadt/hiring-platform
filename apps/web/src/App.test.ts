@@ -652,6 +652,58 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Queue Screening')
   })
 
+  it('loads a completed showcase batch directly from the batch query parameter', async () => {
+    globalThis.history.pushState({}, '', '/?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.bulkBatch).toHaveBeenCalledWith('bulk-1')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Does Not Meet')
+    expect(wrapper.text()).toContain('Needs Review')
+    expect(wrapper.text()).toContain('Meets Criteria')
+    expect(wrapper.text()).toContain('Rahul Sharma')
+    expect(wrapper.text()).toContain('Aniket Dhole')
+    expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
+    expect(wrapper.text()).not.toContain('Choose JD')
+    expect(wrapper.text()).not.toContain('Choose Resumes')
+    expect(wrapper.text()).not.toContain('Dashboard')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('clears the showcase batch query parameter when starting a new screening', async () => {
+    globalThis.history.pushState({}, '', '/screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(globalThis.location.pathname).toBe('/screening')
+    expect(globalThis.location.search).toBe('')
+    expect(wrapper.text()).toContain('Choose JD')
+    expect(wrapper.text()).toContain('Choose Resumes')
+  })
+
+  it('shows a safe fallback when a showcase batch query parameter cannot be loaded', async () => {
+    apiMock.bulkBatch.mockRejectedValueOnce(new Error('404 raw backend detail'))
+    globalThis.history.pushState({}, '', '/?batch=missing-batch')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.bulkBatch).toHaveBeenCalledWith('missing-batch')
+    expect(wrapper.text()).toContain('We could not open that screening batch. Start a new screening or check the link.')
+    expect(wrapper.text()).toContain('New Screening')
+    expect(wrapper.text()).toContain('Choose JD')
+    expect(wrapper.text()).not.toContain('404 raw backend detail')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
   it('keeps the public careers portal available away from the showcase route', async () => {
     globalThis.history.pushState({}, '', '/jobs')
 

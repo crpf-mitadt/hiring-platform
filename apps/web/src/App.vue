@@ -570,6 +570,7 @@ async function bootstrap() {
 async function loadForRoute() {
   if (route.value === 'showcaseScreening') {
     await loadShowcaseFormats()
+    await loadShowcaseBatchFromQuery()
     manageShowcasePolling()
     return
   }
@@ -648,6 +649,21 @@ async function loadShowcaseFormats() {
   if (formats) showcaseFormats.value = formats
 }
 
+async function loadShowcaseBatchFromQuery() {
+  const batchId = new URLSearchParams(globalThis.location.search).get('batch')
+  if (!batchId || showcaseBatch.value?.id === batchId) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    showcaseBatch.value = await api.bulkBatch(batchId)
+  } catch {
+    showcaseBatch.value = null
+    errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+  } finally {
+    loading.value = false
+  }
+}
+
 function setShowcaseJdFile(event: Event) {
   const input = event.target as HTMLInputElement
   showcaseJdFile.value = input.files?.[0] ?? null
@@ -711,6 +727,7 @@ function resetShowcaseScreening() {
   showcaseDesignationOptions.value = []
   errorMessage.value = ''
   message.value = ''
+  if (globalThis.location.search) globalThis.history.replaceState({}, '', globalThis.location.pathname)
   if (showcaseJdInput.value) showcaseJdInput.value.value = ''
   if (showcaseResumeInput.value) showcaseResumeInput.value.value = ''
   manageShowcasePolling()
@@ -1599,6 +1616,14 @@ onBeforeUnmount(() => {
         </header>
 
         <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
+        <Button
+          v-if="errorMessage && !showcaseBatch"
+          label="New Screening"
+          variant="subtle"
+          theme="gray"
+          class="mb-4"
+          @click="resetShowcaseScreening"
+        />
 
         <section v-if="!showcaseBatch" class="space-y-6">
           <div class="grid gap-4 lg:grid-cols-2">
