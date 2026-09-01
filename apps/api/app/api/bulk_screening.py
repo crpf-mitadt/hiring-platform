@@ -19,6 +19,7 @@ from app.services.bulk_screening import (
     confirm_ad_hoc_criteria,
     create_ad_hoc_jd_batch,
     create_existing_job_batch,
+    create_simple_ad_hoc_screening_batch,
     discard_draft_batch,
     get_batch,
     list_batches,
@@ -102,6 +103,31 @@ def api_create_ad_hoc_jd_bulk_batch(
     jd_file: Annotated[UploadFile, File()],
 ):
     batch = create_ad_hoc_jd_batch(db, actor, jd_file=jd_file)
+    db.commit()
+    return batch_to_read(batch)
+
+
+@router.post("/simple", response_model=BulkScreeningBatchRead)
+def api_create_simple_bulk_screening(
+    db: DbDep,
+    actor: ActorDep,
+    jd_file: Annotated[UploadFile, File()],
+    files: Annotated[list[UploadFile] | None, File()] = None,
+    zip_file: Annotated[UploadFile | None, File()] = None,
+    target_designation: Annotated[str | None, Form()] = None,
+):
+    try:
+        batch = create_simple_ad_hoc_screening_batch(
+            db,
+            actor,
+            jd_file=jd_file,
+            files=files,
+            zip_file=zip_file,
+            target_designation=target_designation,
+        )
+    except Exception:
+        db.rollback()
+        raise
     db.commit()
     return batch_to_read(batch)
 

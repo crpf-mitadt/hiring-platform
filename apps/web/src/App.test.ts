@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 
 const apiMock = vi.hoisted(() => ({
@@ -12,7 +12,9 @@ const apiMock = vi.hoisted(() => ({
   listJobs: vi.fn(),
   listApplications: vi.fn(),
   listBulkBatches: vi.fn(),
+  bulkSupportedFormats: vi.fn(),
   bulkBatch: vi.fn(),
+  simpleBulkScreening: vi.fn(),
   createExistingJobBulkBatch: vi.fn(),
   createAdHocBulkBatch: vi.fn(),
   confirmBulkCriteria: vi.fn(),
@@ -46,7 +48,10 @@ vi.mock('frappe-ui', () => ({
   Avatar: { props: ['label'], template: '<span>{{ label }}</span>' },
   Badge: { props: ['label'], template: '<span class="mock-badge">{{ label }}<slot /></span>' },
   Breadcrumbs: { props: ['items'], template: '<nav><span v-for="item in items" :key="item.label">{{ item.label }}</span></nav>' },
-  Button: { props: ['label'], template: `<button @click="$emit('click', $event)">{{ label }}<slot /></button>` },
+  Button: {
+    props: ['label', 'disabled', 'loading'],
+    template: `<button :disabled="disabled || loading" @click="$emit('click', $event)">{{ label }}<slot /></button>`
+  },
   DesktopShell: { template: '<div><slot name="sidebar" /><slot /></div>' },
   Divider: { template: '<hr />' },
   Dialog: { props: ['open', 'title'], template: '<section v-if="open"><h2>{{ title }}</h2><slot /></section>' },
@@ -67,6 +72,7 @@ vi.mock('frappe-ui', () => ({
   MobileNavItem: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}</button>` },
   MobileShell: { template: '<div><slot /><slot name="nav" /></div>' },
   PageHeader: { template: '<header><slot /></header>' },
+  Progress: { props: ['value', 'label'], template: '<div role="progressbar" :aria-valuenow="value">{{ label }} {{ value }}</div>' },
   Sidebar: { template: '<aside><slot /></aside>' },
   SidebarHeader: { props: ['title', 'subtitle'], template: '<div><strong>{{ title }}</strong><small>{{ subtitle }}</small></div>' },
   SidebarItem: { props: ['label'], template: `<button @click="$emit('click')">{{ label }}<slot name="suffix" /></button>` },
@@ -501,6 +507,7 @@ const bulkDraftBatch = {
 
 describe('Hiring Platform product shell', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     globalThis.history.pushState({}, '', '/')
     apiMock.me.mockRejectedValue(new Error('Authentication required'))
     apiMock.publicJobs.mockResolvedValue([publishedJob])
@@ -511,11 +518,19 @@ describe('Hiring Platform product shell', () => {
       screening_reviews_pending: 1,
       shortlisted_for_assessment: 0
     })
+    apiMock.bulkSupportedFormats.mockResolvedValue({
+      jd: ['.docx', '.md', '.pdf', '.txt'],
+      resumes: ['.pdf'],
+      archives: ['.zip'],
+      unsupported: ['.doc', '.jpg', '.png', '.txt'],
+      notes: []
+    })
     apiMock.listJobs.mockResolvedValue([publishedJob])
     apiMock.listBulkBatches.mockResolvedValue([bulkDraftBatch, bulkBatch])
     apiMock.bulkBatch.mockImplementation((batchId: string) =>
       Promise.resolve(batchId === 'bulk-draft' ? bulkDraftBatch : bulkBatch)
     )
+    apiMock.simpleBulkScreening.mockResolvedValue({ ...bulkBatch, source_type: 'ADHOC_JD' })
     apiMock.createExistingJobBulkBatch.mockResolvedValue({ ...bulkDraftBatch, total_files: 0, accepted_count: 0, duplicate_count: 0, items: [] })
     apiMock.createAdHocBulkBatch.mockResolvedValue({
       ...bulkBatch,
@@ -610,7 +625,36 @@ describe('Hiring Platform product shell', () => {
     apiMock.applicationAccessAssessment.mockResolvedValue(null)
   })
 
-  it('renders a public careers portal by default', async () => {
+  async function chooseFiles(wrapper: VueWrapper, testId: string, files: File[]) {
+    const input = wrapper.find(`[data-testid="${testId}"]`)
+    Object.defineProperty(input.element, 'files', { value: files, configurable: true })
+    await input.trigger('change')
+  }
+
+  it('renders the standalone bulk screening showcase by default without dashboard or sidebar chrome', async () => {
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(globalThis.location.pathname).toBe('/')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Upload a job description and resumes to screen candidates against the role.')
+    expect(wrapper.text()).toContain('Job Description')
+    expect(wrapper.text()).toContain('Resumes')
+    expect(wrapper.text()).toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('Recruitment dashboard')
+    expect(wrapper.text()).not.toContain('Dashboard')
+    expect(wrapper.text()).not.toContain('Staff Sign In')
+    expect(wrapper.text()).not.toContain('Bulk screening history')
+    expect(wrapper.find('aside').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Actor')
+    expect(wrapper.text()).not.toContain('Run Worker Once')
+    expect(wrapper.text()).not.toContain('Queue Screening')
+  })
+
+  it('keeps the public careers portal available away from the showcase route', async () => {
+    globalThis.history.pushState({}, '', '/jobs')
+
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
@@ -623,6 +667,130 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Actor')
     expect(wrapper.text()).not.toContain('Run Worker Once')
     expect(wrapper.text()).not.toContain('Queue Screening')
+  })
+
+  it('enables showcase screening only after a JD and resumes are selected', async () => {
+    globalThis.history.pushState({}, '', '/screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    const startButton = () => wrapper.findAll('button').find((button) => button.text() === 'Start Screening')
+    expect(startButton()?.attributes('disabled')).toBeDefined()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [
+      new File(['faculty JD'], 'assistant-professor-artificial-intelligence-long-role-description.docx')
+    ])
+    await flushPromises()
+    expect(wrapper.text()).toContain('assistant-professor-artificial-intelligence-long-role-description.docx')
+    expect(startButton()?.attributes('disabled')).toBeDefined()
+
+    await chooseFiles(wrapper, 'showcase-resume-input', [
+      new File(['meets'], 'candidate-one-long-resume-filename.pdf'),
+      new File(['review'], 'candidate-two-needs-review.pdf')
+    ])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('2 resumes selected')
+    expect(startButton()?.attributes('disabled')).toBeUndefined()
+  })
+
+  it('runs the simplified showcase flow and renders exactly three ordered result sections', async () => {
+    globalThis.history.pushState({}, '', '/screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [
+      new File(['meets'], 'meets.pdf'),
+      new File(['missing'], 'missing.pdf'),
+      new File(['provider failure'], 'provider-failure.pdf')
+    ])
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.simpleBulkScreening).toHaveBeenCalledWith(expect.any(File), expect.any(Array), null)
+    const text = wrapper.text()
+    expect(text.indexOf('Does Not Meet')).toBeLessThan(text.indexOf('Needs Review'))
+    expect(text.indexOf('Needs Review')).toBeLessThan(text.indexOf('Meets Criteria'))
+    expect(wrapper.findAll('h2').filter((heading) => ['Does Not Meet', 'Needs Review', 'Meets Criteria'].includes(heading.text()))).toHaveLength(3)
+    expect(text).toContain('Verified hard-gate evidence indicates the candidate is below minimum experience.')
+    expect(text).toContain(
+      'Screening could not be completed for this resume because of a technical processing issue. Review or retry this candidate manually.'
+    )
+    expect(text).toContain('Screening classification only. Final decisions remain with HR.')
+    expect(text).toContain('New Screening')
+    expect(text).not.toContain('View Evidence')
+    expect(text).not.toContain('Evidence found')
+    expect(text).not.toContain('page 1')
+    expect(text).not.toContain('Score')
+    expect(text).not.toContain('90%')
+    expect(text).not.toContain('Synthetic technical failure')
+  })
+
+  it('shows a compact designation selector only when the backend requires a target designation', async () => {
+    apiMock.simpleBulkScreening.mockImplementation(() =>
+      Promise.reject({
+        code: 'TARGET_DESIGNATION_REQUIRED',
+        issues: [
+        { type: 'TARGET_DESIGNATION_REQUIRED', options: ['Assistant Professor', 'Professor'] }
+        ]
+      })
+    )
+    globalThis.history.pushState({}, '', '/screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Screening for')
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['multi designation JD'], 'multi-rank-jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'candidate.pdf')])
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Choose a target designation before screening this JD.')
+    expect(wrapper.text()).toContain('Screening for')
+    expect(wrapper.text()).not.toContain('scoring_rubric')
+    expect(wrapper.text()).not.toContain('requirement_id')
+  })
+
+  it('resets showcase screening back to the upload form after completion', async () => {
+    globalThis.history.pushState({}, '', '/screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'meets.pdf')])
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Choose JD')
+    expect(wrapper.text()).toContain('Choose Resumes')
+    expect(wrapper.text()).not.toContain('Does Not Meet')
+    expect(wrapper.text()).not.toContain('Needs Review')
+    expect(wrapper.text()).not.toContain('Meets Criteria')
+  })
+
+  it('keeps showcase layout mobile-stacking through responsive Frappe token classes', () => {
+    const source = readFileSync('src/App.vue', 'utf8')
+    const showcaseSource = source.slice(
+      source.indexOf("route === 'showcaseScreening'"),
+      source.indexOf("v-else-if=\"!route.startsWith('staff')", source.indexOf("route === 'showcaseScreening'"))
+    )
+
+    expect(showcaseSource).toContain('grid gap-4 lg:grid-cols-2')
+    expect(showcaseSource).toContain('grid gap-4 lg:grid-cols-3')
+    expect(showcaseSource).not.toContain('<Sidebar')
+    expect(showcaseSource).not.toContain('View Evidence')
+    expect(showcaseSource).not.toContain('Export')
   })
 
   it('renders application-scoped candidate continuation without candidate portal chrome', async () => {
