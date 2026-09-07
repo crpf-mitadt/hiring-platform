@@ -4,12 +4,14 @@ from app.core.config import get_settings
 from app.models import (
     Application,
     ApplicationAccessToken,
+    AssessmentAssignment,
     AssessmentOption,
     AssessmentQuestion,
     AssessmentQuestionType,
     AssessmentTemplate,
     AssessmentTemplateStatus,
     AssessmentTemplateVersion,
+    IntroVideoMode,
     Job,
     ScreeningJob,
     ScreeningRun,
@@ -124,9 +126,14 @@ def test_public_application_creates_scoped_access_and_auto_screening(client, db_
     status = client.get("/api/applications/application-access/application")
     assert status.status_code == 200, status.text
     assert status.json()["id"] == application.id
+    assert status.json()["status_label"] == "Application submitted"
+    assert status.json()["progress"] == []
+    assert status.json()["interview"] is None
     assert "score" not in status.text
     assert "evidence" not in status.text
     assert "aditi@example.org" not in status.text
+    assert "Interview" not in status.text
+    assert "Decision" not in status.text
 
     assert client.get("/api/jobs").status_code == 401
 
@@ -191,6 +198,66 @@ def test_application_scoped_assessment_can_be_completed_without_candidate_accoun
 
     candidate_status = client.get("/api/applications/application-access/application")
     assert "percentage" not in candidate_status.text
+    assert "score" not in candidate_status.text
+
+
+def test_public_candidates_share_job_version_assessment_and_can_skip_required_video(
+    client,
+    db_session,
+    users,
+    published_job,
+):
+    version = _assessment_version(db_session, users["admin"]["id"])
+    job = db_session.get(Job, published_job["id"])
+    job.assessment_template_version_id = version.id
+    job.intro_video_mode = IntroVideoMode.REQUIRED
+    db_session.commit()
+
+    settings = get_settings()
+    previous_environment = settings.environment
+    settings.environment = "development"
+    try:
+        first = _submit_public_application(client, published_job)
+        second_resume = _public_resume(client)
+        second_photo = _public_photo(client)
+        second_payload = _application_payload(second_resume["id"], second_photo["id"])
+        second_payload["basic"]["email"] = "second@example.org"
+        second_payload["basic"]["full_name"] = "Second Candidate"
+        second = client.post(f"/api/applications/public/jobs/{published_job['id']}/apply", json=second_payload).json()
+    finally:
+        settings.environment = previous_environment
+
+    first_token = _extract_token(first["continuation_url"])
+    assert client.post("/api/applications/application-access/exchange", json={"token": first_token}).status_code == 200
+    first_assignment = client.get("/api/applications/application-access/assessment").json()
+    first_attempt = client.post(
+        f"/api/applications/application-access/assessments/{first_assignment['id']}/start"
+    ).json()
+    question = first_attempt["questions"][0]
+    client.post(
+        f"/api/applications/application-access/assessments/attempts/{first_attempt['id']}/submit",
+        json={"responses": [{"question_id": question["id"], "selected_option_ids": [question["options"][0]["id"]]}]},
+    )
+    skipped = client.post("/api/applications/application-access/intro-video/skip")
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json()["status"] == "SKIPPED"
+
+    second_application = db_session.get(Application, second["id"])
+    first_application = db_session.get(Application, first["id"])
+    first_assignment_record = db_session.scalar(
+        select(AssessmentAssignment).where(AssessmentAssignment.application_id == first_application.id)
+    )
+    second_assignment_record = db_session.scalar(
+        select(AssessmentAssignment).where(AssessmentAssignment.application_id == second_application.id)
+    )
+    assert first_assignment_record is not None
+    assert second_assignment_record is not None
+    assert first_assignment_record.template_version_id == version.id
+    assert second_assignment_record.template_version_id == version.id
+    assert (
+        first_assignment_record.version_snapshot["questions"]
+        == second_assignment_record.version_snapshot["questions"]
+    )
 
 
 def _assessment_version(db_session, actor_id: str) -> AssessmentTemplateVersion:
@@ -218,7 +285,7 @@ def _assessment_version(db_session, actor_id: str) -> AssessmentTemplateVersion:
     )
     question.options = [
         AssessmentOption(position=1, label="A", text="Human reviewers", is_correct=True),
-        AssessmentOption(position=2, label="B", text="The AI score", is_correct=False),
+        AssessmentOption(position=2, label="B", text="An automated system", is_correct=False),
     ]
     version.questions.append(question)
     db_session.add(template)

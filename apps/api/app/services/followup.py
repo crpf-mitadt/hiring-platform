@@ -56,8 +56,8 @@ def upload_intro_video(
 
 
 def skip_intro_video(db: Session, application: Application) -> ApplicationIntroVideo:
-    if application.job.intro_video_mode == IntroVideoMode.REQUIRED:
-        raise InvalidTransition("Intro video is required for this job")
+    if application.job.intro_video_mode == IntroVideoMode.NONE:
+        raise InvalidTransition("Intro video is not configured for this job")
     record = intro_video_for_application(db, application)
     if record is None:
         record = ApplicationIntroVideo(application=application)

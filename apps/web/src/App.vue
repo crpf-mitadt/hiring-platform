@@ -364,6 +364,18 @@ const bulkResultSummary = computed(() => ({
   unsupported: selectedBulkBatch.value?.unsupported_count ?? 0,
   technicalFailures: selectedBulkBatch.value?.failed_count ?? 0
 }))
+const candidateJourneyStep = computed<'assessment' | 'video' | 'done'>(() => {
+  const assessment = continuationAssessment.value
+  const introVideo = applicationStatus.value?.intro_video
+  if (assessment && assessment.status !== 'SUBMITTED') return 'assessment'
+  if (introVideo && !['UPLOADED', 'SKIPPED'].includes(String(introVideo.status))) return 'video'
+  return 'done'
+})
+const candidateJourneyProgress = computed(() => {
+  if (candidateJourneyStep.value === 'assessment') return 2
+  if (candidateJourneyStep.value === 'video') return 3
+  return 4
+})
 const showcaseResumeCount = computed(() => showcaseResumeFiles.value.length)
 const showcaseCanStart = computed(
   () =>
@@ -887,7 +899,7 @@ async function submitPublicApplication() {
         resume_document_id: resume.id,
         photo_document_id: photo.id
       }),
-    'Application received. Screening will run automatically.'
+    'Application received.'
   )
   if (submitted?.continuation_url) {
     const continuation = new globalThis.URL(submitted.continuation_url)
@@ -914,7 +926,14 @@ async function loadApplicationContinuation() {
   const status = await run(() => api.applicationAccessStatus())
   if (status) applicationStatus.value = status
   const assignment = await run(() => api.applicationAccessAssessment())
-  if (assignment) continuationAssessment.value = assignment
+  continuationAssessment.value = assignment
+  if (assignment?.attempt && assignment.attempt.status !== 'SUBMITTED') {
+    activeAttempt.value = assignment.attempt
+  } else if (assignment && assignment.status !== 'SUBMITTED') {
+    await startAssessment()
+  } else {
+    activeAttempt.value = null
+  }
 }
 
 async function startAssessment() {
@@ -2088,12 +2107,12 @@ onBeforeUnmount(() => {
               <div class="grid gap-4 sm:grid-cols-2">
                 <label class="space-y-1 text-sm text-ink-gray-7">
                   <span>Photo JPG/PNG, max 2MB</span>
-                  <input class="sr-only" type="file" accept=".jpg,.jpeg,.png" required @change="setPhotoFile">
+                  <input data-testid="public-photo-input" class="sr-only" type="file" accept=".jpg,.jpeg,.png" required @change="setPhotoFile">
                   <span class="block truncate rounded border border-outline-gray-2 bg-surface-base px-3 py-2">{{ photoFile?.name ?? 'Choose photo' }}</span>
                 </label>
                 <label class="space-y-1 text-sm text-ink-gray-7">
                   <span>Resume PDF, max 5MB</span>
-                  <input class="sr-only" type="file" accept=".pdf" required @change="setResumeFile">
+                  <input data-testid="public-resume-input" class="sr-only" type="file" accept=".pdf" required @change="setResumeFile">
                   <span class="block truncate rounded border border-outline-gray-2 bg-surface-base px-3 py-2">{{ resumeFile?.name ?? 'Choose resume PDF' }}</span>
                 </label>
               </div>
@@ -2125,74 +2144,70 @@ onBeforeUnmount(() => {
           <p class="text-p-base text-ink-gray-6">Opening your application status.</p>
         </section>
 
-        <section v-if="route === 'applicationStatus' && applicationStatus" class="space-y-6">
-          <div>
-            <Badge label="Application received" variant="subtle" theme="green" />
-            <h1 class="mt-2 text-2xl font-semibold text-ink-gray-9">{{ applicationStatus.job_title }}</h1>
-            <p class="mt-1 text-p-base text-ink-gray-6">
-              Submitted {{ formatDate(applicationStatus.submitted_at) }}
-            </p>
-            <StatusBadge :value="applicationStatus.status_label" class="mt-2" />
+        <section v-if="route === 'applicationStatus' && applicationStatus" class="mx-auto max-w-2xl space-y-7 py-8">
+          <div class="space-y-3">
+            <Badge :label="`Step ${candidateJourneyProgress} of 4`" variant="subtle" theme="gray" />
+            <h1 class="text-3xl font-semibold text-ink-gray-9">{{ applicationStatus.job_title }}</h1>
+            <p class="text-p-base text-ink-gray-6">Submitted {{ formatDate(applicationStatus.submitted_at) }}</p>
+            <Progress :value="candidateJourneyProgress * 25" size="sm" label="" />
           </div>
-          <List :columns="['minmax(0,1fr)', '12rem']">
-            <ListRow v-for="row in applicationStatus.progress" :key="row.label" :value="row.label">
-              <ListCell>{{ row.label }}</ListCell>
-              <ListCell><StatusBadge :value="applicationStatusLabel(row.status)" /></ListCell>
-            </ListRow>
-          </List>
-          <section v-if="continuationAssessment" class="space-y-4">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <h2 class="text-lg-semibold text-ink-gray-8">{{ continuationAssessment.title }}</h2>
-                <p class="text-p-base text-ink-gray-6">{{ continuationAssessment.instructions }}</p>
-              </div>
-              <Button
-                v-if="!activeAttempt && continuationAssessment.status !== 'SUBMITTED'"
-                label="Start assessment"
-                variant="solid"
-                theme="gray"
-                @click="startAssessment"
-              />
+
+          <section v-if="candidateJourneyStep === 'assessment' && continuationAssessment" class="space-y-5">
+            <div class="space-y-2">
+              <h2 class="text-2xl font-semibold text-ink-gray-8">{{ continuationAssessment.title }}</h2>
+              <p class="text-p-base text-ink-gray-6">{{ continuationAssessment.instructions }}</p>
             </div>
-            <form v-if="activeAttempt && activeAttempt.status !== 'SUBMITTED'" class="space-y-4" @submit.prevent="submitAssessment">
-              <section v-for="question in activeAttempt.questions" :key="question.id" class="space-y-2 border-b border-outline-gray-1 pb-4">
-                <p class="text-base-medium text-ink-gray-8">{{ question.position }}. {{ question.prompt }}</p>
-                <label v-for="option in question.options" :key="option.id" class="flex items-center gap-2 text-sm text-ink-gray-7">
+            <LoadingText v-if="!activeAttempt" :lines="3" />
+            <form v-else class="space-y-5" @submit.prevent="submitAssessment">
+              <section
+                v-for="question in activeAttempt.questions"
+                :key="question.id"
+                class="space-y-3 border-b border-outline-gray-1 pb-5"
+              >
+                <p class="text-lg-semibold leading-7 text-ink-gray-8">{{ question.position }}. {{ question.prompt }}</p>
+                <label
+                  v-for="option in question.options"
+                  :key="option.id"
+                  class="flex cursor-pointer items-start gap-3 rounded border border-outline-gray-1 bg-surface-base px-3 py-3 text-p-base text-ink-gray-7 hover:bg-surface-gray-1"
+                >
                   <input
                     type="radio"
                     :name="question.id"
                     :value="option.id"
+                    class="mt-1"
                     @change="setSingleAssessmentResponse(question.id, option.id)"
                   >
-                  {{ option.label }}. {{ option.text }}
+                  <span>{{ option.label }}. {{ option.text }}</span>
                 </label>
               </section>
-              <Button label="Submit Assessment" variant="solid" theme="gray" type="submit" />
+              <Button label="Submit assessment" variant="solid" theme="gray" type="submit" :loading="loading" />
             </form>
-            <Alert v-if="continuationAssessment.status === 'SUBMITTED'" title="Assessment submitted" theme="green" />
           </section>
-          <section class="space-y-3">
-            <div class="flex flex-wrap items-center gap-2">
-              <h2 class="text-lg-semibold text-ink-gray-8">Introduction video</h2>
-              <StatusBadge :value="applicationStatusLabel(applicationStatus.intro_video?.status, 'Not requested')" />
+
+          <section v-else-if="candidateJourneyStep === 'video'" class="space-y-5">
+            <div class="space-y-2">
+              <h2 class="text-2xl font-semibold text-ink-gray-8">Optional introduction video</h2>
+              <p class="text-p-base text-ink-gray-6">You may add a short introduction video, or skip this step.</p>
             </div>
-            <Alert v-if="applicationStatus.intro_video?.status === 'UPLOADED'" title="Introduction video uploaded" theme="green" />
-            <Alert v-else-if="applicationStatus.intro_video?.status === 'SKIPPED'" title="Introduction video skipped" theme="gray" />
-            <div v-else class="flex flex-wrap items-end gap-3">
+            <div class="flex flex-wrap items-end gap-3">
               <label class="space-y-1 text-sm text-ink-gray-7">
-                <span>Optional video upload</span>
+                <span>Video file</span>
                 <input class="sr-only" type="file" accept=".mp4,.webm,.mov" @change="setVideoFile">
-                <span class="block min-w-56 truncate rounded border border-outline-gray-2 bg-surface-base px-3 py-2">{{ videoFile?.name ?? 'Choose video' }}</span>
+                <span class="block min-w-56 truncate rounded border border-outline-gray-2 bg-surface-base px-3 py-2">
+                  {{ videoFile?.name ?? 'Choose video' }}
+                </span>
               </label>
-              <Button label="Upload" variant="solid" theme="gray" :disabled="!videoFile" @click="uploadVideo" />
+              <Button label="Upload video" variant="solid" theme="gray" :disabled="!videoFile" @click="uploadVideo" />
               <Button label="Skip" variant="subtle" theme="gray" @click="skipVideo" />
             </div>
           </section>
-          <Alert
-            :title="applicationStatus.interview?.status === 'SCHEDULED' ? 'Interview scheduled' : 'Interview not scheduled'"
-            :description="String(applicationStatus.interview?.candidate_instructions ?? 'Interview details will appear here when staff schedule them.')"
-            theme="gray"
-          />
+
+          <section v-else class="space-y-4">
+            <Badge label="Application submitted" variant="subtle" theme="green" />
+            <h2 class="text-3xl font-semibold text-ink-gray-9">Thank you for applying.</h2>
+            <p class="text-p-base text-ink-gray-6">Your application has been received.</p>
+            <Button label="Done" variant="solid" theme="gray" @click="navigate('publicHome')" />
+          </section>
         </section>
 
         <section v-if="route === 'staffLogin'" class="mx-auto max-w-md space-y-4 pt-8">

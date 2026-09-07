@@ -7,6 +7,9 @@ const apiMock = vi.hoisted(() => ({
   me: vi.fn(),
   publicJobs: vi.fn(),
   publicJob: vi.fn(),
+  publicApply: vi.fn(),
+  uploadPublicResume: vi.fn(),
+  uploadPublicPhoto: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
   dashboard: vi.fn(),
@@ -28,7 +31,12 @@ const apiMock = vi.hoisted(() => ({
   bulkExportUrl: vi.fn(),
   screeningDossier: vi.fn(),
   applicationAccessStatus: vi.fn(),
-  applicationAccessAssessment: vi.fn()
+  applicationAccessAssessment: vi.fn(),
+  exchangeApplicationAccess: vi.fn(),
+  startApplicationAssessment: vi.fn(),
+  submitApplicationAssessment: vi.fn(),
+  uploadIntroVideo: vi.fn(),
+  skipIntroVideo: vi.fn()
 }))
 
 vi.mock('./api/client', () => ({
@@ -153,6 +161,7 @@ const bulkBatch = {
   unsupported_count: 0,
   completed_count: 3,
   failed_count: 1,
+  progress_percent: 100,
   failure_code: null,
   failure_message: null,
   started_at: '2026-08-26T00:00:00Z',
@@ -172,6 +181,9 @@ const bulkBatch = {
       content_sha256: 'a',
       duplicate_of_item_id: null,
       status: 'COMPLETED',
+      processing_stage: 'COMPLETED',
+      progress_percent: 100,
+      stage_updated_at: '2026-08-26T00:03:00Z',
       classification: 'NEEDS_REVIEW',
       concise_reason: 'Required React, Node.js and SQL evidence is present but needs HR review.',
       candidate_name: 'Aniket Dhole',
@@ -371,6 +383,9 @@ const bulkBatch = {
       content_sha256: 'b',
       duplicate_of_item_id: null,
       status: 'COMPLETED',
+      processing_stage: 'COMPLETED',
+      progress_percent: 100,
+      stage_updated_at: '2026-08-26T00:04:00Z',
       classification: 'DOES_NOT_MEET_CRITERIA',
       concise_reason: 'Verified hard-gate evidence indicates the candidate is below minimum experience.',
       candidate_name: 'Rahul Sharma',
@@ -402,6 +417,9 @@ const bulkBatch = {
       content_sha256: 'c',
       duplicate_of_item_id: null,
       status: 'FAILED',
+      processing_stage: 'COMPARING_WITH_JD',
+      progress_percent: 100,
+      stage_updated_at: '2026-08-26T00:05:00Z',
       classification: 'NEEDS_REVIEW',
       concise_reason: 'Screening could not be completed because of a technical processing failure.',
       candidate_name: null,
@@ -433,6 +451,9 @@ const bulkBatch = {
       content_sha256: 'd',
       duplicate_of_item_id: null,
       status: 'COMPLETED',
+      processing_stage: 'COMPLETED',
+      progress_percent: 100,
+      stage_updated_at: '2026-08-26T00:06:00Z',
       classification: 'NEEDS_REVIEW',
       concise_reason: 'Evidence is incomplete or ambiguous and requires HR review.',
       candidate_name: null,
@@ -470,6 +491,7 @@ const bulkDraftBatch = {
   unsupported_count: 0,
   completed_count: 0,
   failed_count: 0,
+  progress_percent: 0,
   started_at: null,
   completed_at: null,
   items: [
@@ -482,6 +504,9 @@ const bulkDraftBatch = {
       content_sha256: 'same',
       duplicate_of_item_id: null,
       status: 'PENDING',
+      processing_stage: null,
+      progress_percent: 0,
+      stage_updated_at: null,
       classification: null,
       concise_reason: null,
       candidate_name: null,
@@ -498,6 +523,9 @@ const bulkDraftBatch = {
       content_sha256: 'same',
       duplicate_of_item_id: 'draft-item-1',
       status: 'DUPLICATE',
+      processing_stage: null,
+      progress_percent: 0,
+      stage_updated_at: null,
       classification: null,
       concise_reason: 'Duplicate of Vishakha-yawale.pdf; ignored to avoid repeated OCR/model work.',
       candidate_name: null,
@@ -512,9 +540,18 @@ describe('Hiring Platform product shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     globalThis.history.pushState({}, '', '/')
+    globalThis.sessionStorage.clear()
     apiMock.me.mockRejectedValue(new ApiError('Authentication required', undefined, [], 401))
     apiMock.publicJobs.mockResolvedValue([publishedJob])
     apiMock.publicJob.mockResolvedValue(publishedJob)
+    apiMock.publicApply.mockResolvedValue(null)
+    apiMock.uploadPublicResume.mockResolvedValue({ id: 'resume-1' })
+    apiMock.uploadPublicPhoto.mockResolvedValue({ id: 'photo-1' })
+    apiMock.exchangeApplicationAccess.mockResolvedValue({ ok: true })
+    apiMock.startApplicationAssessment.mockResolvedValue(null)
+    apiMock.submitApplicationAssessment.mockResolvedValue(null)
+    apiMock.uploadIntroVideo.mockResolvedValue({ status: 'UPLOADED' })
+    apiMock.skipIntroVideo.mockResolvedValue({ status: 'SKIPPED' })
     apiMock.dashboard.mockResolvedValue({
       open_jobs: 1,
       applications_received: 1,
@@ -614,16 +651,12 @@ describe('Hiring Platform product shell', () => {
       job_id: 'job-1',
       job_title: 'Assistant Professor',
       submitted_at: '2026-08-24T00:00:00Z',
-      status_label: 'Under Review',
+      status_label: 'Application submitted',
       resume_filename: 'resume.pdf',
-      progress: [
-        { label: 'Application submitted', status: 'complete' },
-        { label: 'Application review', status: 'in_progress' },
-        { label: 'Assessment', status: 'ASSIGNED' },
-      ],
+      progress: [],
       assessment: null,
       intro_video: { status: 'NOT_UPLOADED' },
-      interview: { status: 'NOT_SCHEDULED' }
+      interview: null
     })
     apiMock.applicationAccessAssessment.mockResolvedValue(null)
   })
@@ -977,6 +1010,7 @@ describe('Hiring Platform product shell', () => {
     await flushPromises()
 
     expect(apiMock.simpleBulkScreening).toHaveBeenCalledWith(expect.any(File), expect.any(Array), null)
+    expect(globalThis.location.search).toBe('?batch=bulk-1')
     const text = wrapper.text()
     expect(text.indexOf('Does Not Meet')).toBeLessThan(text.indexOf('Needs Review'))
     expect(text.indexOf('Needs Review')).toBeLessThan(text.indexOf('Meets Criteria'))
@@ -995,7 +1029,7 @@ describe('Hiring Platform product shell', () => {
     expect(text).not.toContain('Synthetic technical failure')
   })
 
-  it('shows a compact designation selector only when the backend requires a target designation', async () => {
+  it('does not reintroduce a designation selector in the simplified showcase flow', async () => {
     apiMock.simpleBulkScreening.mockImplementation(() =>
       Promise.reject({
         code: 'TARGET_DESIGNATION_REQUIRED',
@@ -1016,8 +1050,10 @@ describe('Hiring Platform product shell', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Choose a target designation before screening this JD.')
-    expect(wrapper.text()).toContain('Screening for')
+    expect(apiMock.simpleBulkScreening).toHaveBeenCalledWith(expect.any(File), expect.any(Array), null)
+    expect(wrapper.text()).toContain("We couldn't prepare this job description for screening. Please try another JD.")
+    expect(wrapper.text()).not.toContain('Choose a target designation before screening this JD.')
+    expect(wrapper.text()).not.toContain('Screening for')
     expect(wrapper.text()).not.toContain('scoring_rubric')
     expect(wrapper.text()).not.toContain('requirement_id')
   })
@@ -1038,6 +1074,7 @@ describe('Hiring Platform product shell', () => {
 
     expect(wrapper.text()).toContain('Choose JD')
     expect(wrapper.text()).toContain('Choose Resumes')
+    expect(globalThis.location.search).toBe('')
     expect(wrapper.text()).not.toContain('Does Not Meet')
     expect(wrapper.text()).not.toContain('Needs Review')
     expect(wrapper.text()).not.toContain('Meets Criteria')
@@ -1064,12 +1101,10 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Application received')
-    expect(wrapper.text()).toContain('Application submitted')
-    expect(wrapper.text()).toContain('Under review')
-    expect(wrapper.text()).toContain('Assigned')
-    expect(wrapper.text()).toContain('Not uploaded')
-    expect(wrapper.text()).toContain('Interview not scheduled')
+    expect(wrapper.text()).toContain('Optional introduction video')
+    expect(wrapper.text()).not.toContain('Under review')
+    expect(wrapper.text()).not.toContain('Interview not scheduled')
+    expect(wrapper.text()).not.toContain('Decision')
     expect(wrapper.text()).not.toContain('ASSIGNED')
     expect(wrapper.text()).not.toContain('NOT_UPLOADED')
     expect(wrapper.text()).not.toContain('NOT_SCHEDULED')
@@ -1077,6 +1112,155 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('My applications')
     expect(wrapper.text()).not.toContain('Evidence completeness')
     expect(wrapper.text()).not.toContain('screening_score')
+  })
+
+  it('shows the job-scoped assessment immediately after public application submission', async () => {
+    apiMock.publicApply.mockResolvedValue({
+      id: 'application-1',
+      job_id: 'job-1',
+      job_title: 'Assistant Professor',
+      submitted_at: '2026-08-24T00:00:00Z',
+      status_label: 'Application submitted',
+      continuation_url: 'http://localhost/application/continue?token=access-token'
+    })
+    apiMock.uploadPublicResume.mockResolvedValue({ id: 'resume-1' })
+    apiMock.uploadPublicPhoto.mockResolvedValue({ id: 'photo-1' })
+    apiMock.exchangeApplicationAccess.mockResolvedValue({ ok: true })
+    apiMock.applicationAccessAssessment.mockResolvedValue({
+      id: 'assessment-1',
+      application_id: 'application-1',
+      status: 'ASSIGNED',
+      assigned_at: '2026-08-24T00:00:00Z',
+      title: 'Faculty screening assessment',
+      instructions: 'Answer questions grounded in this role.',
+      duration_minutes: 20,
+      attempt: null,
+      result: null
+    })
+    apiMock.startApplicationAssessment.mockResolvedValue({
+      id: 'attempt-1',
+      assignment_id: 'assessment-1',
+      application_id: 'application-1',
+      status: 'IN_PROGRESS',
+      started_at: '2026-08-24T00:01:00Z',
+      submitted_at: null,
+      questions: [
+        {
+          id: 'question-1',
+          position: 1,
+          prompt: 'Which action is most relevant to this faculty role?',
+          question_type: 'SINGLE_CHOICE',
+          marks: 1,
+          options: [{ id: 'option-1', label: 'A', text: 'Prepare a course plan', position: 1 }]
+        }
+      ]
+    })
+    globalThis.history.pushState({}, '', '/jobs/job-1/apply')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+    ;(wrapper.vm as unknown as { applicationStep: string }).applicationStep = 'documents'
+    await flushPromises()
+    await chooseFiles(wrapper, 'public-resume-input', [new File(['resume'], 'resume.pdf')])
+    await chooseFiles(wrapper, 'public-photo-input', [new File(['photo'], 'photo.png')])
+    ;(wrapper.vm as unknown as { applicationStep: string }).applicationStep = 'review'
+    await flushPromises()
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.publicApply).toHaveBeenCalled()
+    expect(apiMock.startApplicationAssessment).toHaveBeenCalledWith('assessment-1')
+    expect(wrapper.text()).toContain('Faculty screening assessment')
+    expect(wrapper.text()).toContain('Which action is most relevant to this faculty role?')
+    expect(wrapper.text()).not.toContain('Application review')
+    expect(wrapper.text()).not.toContain('AI score')
+  })
+
+  it('moves from assessment submission to optional video and then final confirmation', async () => {
+    apiMock.applicationAccessAssessment
+      .mockResolvedValueOnce({
+        id: 'assessment-1',
+        application_id: 'application-1',
+        status: 'ASSIGNED',
+        assigned_at: '2026-08-24T00:00:00Z',
+        title: 'Faculty screening assessment',
+        instructions: 'Answer questions grounded in this role.',
+        duration_minutes: 20,
+        attempt: {
+          id: 'attempt-1',
+          assignment_id: 'assessment-1',
+          application_id: 'application-1',
+          status: 'IN_PROGRESS',
+          started_at: '2026-08-24T00:01:00Z',
+          submitted_at: null,
+          questions: [
+            {
+              id: 'question-1',
+              position: 1,
+              prompt: 'Which action is most relevant to this faculty role?',
+              question_type: 'SINGLE_CHOICE',
+              marks: 1,
+              options: [{ id: 'option-1', label: 'A', text: 'Prepare a course plan', position: 1 }]
+            }
+          ]
+        },
+        result: null
+      })
+      .mockResolvedValue({
+        id: 'assessment-1',
+        application_id: 'application-1',
+        status: 'SUBMITTED',
+        assigned_at: '2026-08-24T00:00:00Z',
+        title: 'Faculty screening assessment',
+        instructions: 'Answer questions grounded in this role.',
+        duration_minutes: 20,
+        attempt: null,
+        result: null
+      })
+    apiMock.submitApplicationAssessment.mockResolvedValue({
+      id: 'attempt-1',
+      assignment_id: 'assessment-1',
+      application_id: 'application-1',
+      status: 'SUBMITTED',
+      started_at: '2026-08-24T00:01:00Z',
+      submitted_at: '2026-08-24T00:03:00Z',
+      questions: []
+    })
+    apiMock.skipIntroVideo.mockResolvedValue({ status: 'SKIPPED' })
+    globalThis.history.pushState({}, '', '/application')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.find('input[type="radio"]').setValue()
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Optional introduction video')
+    expect(wrapper.text()).not.toContain('Score')
+    expect(wrapper.text()).not.toContain('passed')
+    expect(wrapper.text()).not.toContain('failed')
+
+    apiMock.applicationAccessStatus.mockResolvedValue({
+      id: 'application-1',
+      job_id: 'job-1',
+      job_title: 'Assistant Professor',
+      submitted_at: '2026-08-24T00:00:00Z',
+      status_label: 'Application submitted',
+      resume_filename: 'resume.pdf',
+      progress: [],
+      assessment: null,
+      intro_video: { status: 'SKIPPED' },
+      interview: null
+    })
+    await wrapper.findAll('button').find((button) => button.text() === 'Skip')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.skipIntroVideo).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Thank you for applying.')
+    expect(wrapper.text()).toContain('Your application has been received.')
+    expect(wrapper.text()).not.toContain('Final decision')
   })
 
   it('renders a role-aware staff dashboard without development controls', async () => {
@@ -1139,13 +1323,54 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).toContain('Job Description')
     expect(wrapper.text()).toContain('Resumes')
     expect(wrapper.text()).toContain('Start Screening')
-    expect(wrapper.text()).not.toContain('Full Stack Engineering Screening Batch With Long Academic Department Title')
+    expect(wrapper.text()).toContain('Recent screenings')
+    expect(wrapper.text()).toContain('Assistant Professor bulk screening')
     expect(wrapper.text()).not.toContain('Resume draft')
     expect(wrapper.text()).not.toContain('Discard screening')
     expect(wrapper.text()).not.toContain('Archive screening')
     expect(wrapper.text()).not.toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Extract Criteria')
     expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+  })
+
+  it('restores an in-progress dashboard bulk screening from recent history', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    const runningBatch = {
+      ...bulkBatch,
+      id: 'bulk-running',
+      status: 'RUNNING',
+      completed_count: 0,
+      failed_count: 0,
+      progress_percent: 11,
+      items: [
+        {
+          ...bulkBatch.items[0],
+          id: 'running-item',
+          batch_id: 'bulk-running',
+          status: 'RUNNING',
+          processing_stage: 'STRUCTURING_PROFILE',
+          progress_percent: 45,
+          stage_updated_at: '2026-08-26T00:04:00Z',
+          classification: null
+        }
+      ]
+    }
+    apiMock.listBulkBatches.mockResolvedValue([runningBatch, bulkBatch])
+    apiMock.bulkBatch.mockImplementation((batchId: string) => Promise.resolve(batchId === 'bulk-running' ? runningBatch : bulkBatch))
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.bulkBatch).toHaveBeenCalledWith('bulk-running')
+    expect(globalThis.location.search).toBe('?batch=bulk-running')
+    expect(wrapper.text()).toContain('Preparing candidate profile')
   })
 
   it('loads dashboard bulk screening results from the batch query parameter', async () => {
@@ -1176,6 +1401,59 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Score')
     expect(wrapper.text()).not.toContain('weighted')
     expect(wrapper.text()).not.toContain('90%')
+  })
+
+  it('keeps recent history when New Screening clears the active dashboard batch', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(globalThis.location.search).toBe('')
+    expect(wrapper.text()).toContain('Choose JD')
+    expect(wrapper.text()).toContain('Recent screenings')
+    expect(wrapper.text()).toContain('Assistant Professor bulk screening')
+  })
+
+  it('allows long bulk screening candidate reasons to expand without evidence clutter', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    const longReasonBatch = {
+      ...bulkBatch,
+      items: [
+        {
+          ...bulkBatch.items[0],
+          concise_reason:
+            'Required teaching evidence, AI curriculum delivery, research mentorship, publication support, and department coordination are partially present, but independent ownership and minimum publication requirements need HR review before any consequential screening action is recorded.'
+        }
+      ]
+    }
+    apiMock.bulkBatch.mockResolvedValue(longReasonBatch)
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Read more')
+    await wrapper.findAll('button').find((button) => button.text().includes('Read more'))?.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Read less')
+    expect(wrapper.text()).not.toContain('View Evidence')
+    expect(wrapper.text()).not.toContain('page 1')
   })
 
   it('maps legacy dashboard bulk result paths to the simplified batch query route', async () => {

@@ -211,25 +211,19 @@ def get_application_for_actor(db: Session, actor: User, application_id: str) -> 
 def candidate_safe_status(application: Application) -> dict:
     assessment = application_assessment_for_read(application)
     intro_video = getattr(application, "_intro_video_read", None)
-    interview = getattr(application, "_interview_read", None)
     return {
         "id": application.id,
         "job_id": application.job_id,
         "job_title": application.job.title,
         "submitted_at": application.submitted_at,
-        "status_label": _candidate_status_label(application.current_stage),
+        "status_label": "Application submitted",
         "resume_filename": (
             application.resume_document.original_filename if application.resume_document else None
         ),
-        "progress": candidate_progress_rows(
-            application,
-            assessment=assessment,
-            intro_video=intro_video,
-            interview=interview,
-        ),
+        "progress": [],
         "assessment": assessment,
         "intro_video": intro_video,
-        "interview": interview,
+        "interview": None,
     }
 
 
