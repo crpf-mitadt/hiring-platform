@@ -47,6 +47,7 @@ import type {
   User
 } from './api/types'
 import StatusBadge from './components/StatusBadge.vue'
+import BulkScreeningShowcase from './components/BulkScreeningShowcase.vue'
 
 type RouteName =
   | 'showcaseScreening'
@@ -122,6 +123,8 @@ const showcaseTargetDesignation = ref('')
 const showcaseDesignationOptions = ref<{ label: string; value: string }[]>([])
 const showcaseFormats = ref<BulkSupportedFormats | null>(null)
 const showcasePollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
+const showcaseLegacyVisible = computed(() => false)
+const bulkLegacyVisible = computed(() => false)
 
 const publicFilter = reactive({ search: '', location: '', employment_type: '' })
 const staffJobFilter = reactive({ search: '', status: '' })
@@ -477,7 +480,7 @@ function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicati
 
 function routeFromLocation(): RouteName {
   const path = globalThis.location.pathname
-  if (path === '/' || path === '/screening') return 'showcaseScreening'
+  if (path === '/screening') return 'showcaseScreening'
   if (path === '/login' || path === '/staff/login') return 'staffLogin'
   if (path === '/jobs') return 'publicJobs'
   if (path.startsWith('/jobs/') && path.endsWith('/apply')) {
@@ -513,10 +516,12 @@ function routeFromLocation(): RouteName {
   }
   if (path === '/app/bulk-screening/new') {
     routeBulkBatchId.value = null
-    return 'staffBulkScreeningNew'
+    return 'staffBulkScreening'
   }
   if (path.startsWith('/app/bulk-screening/')) {
-    routeBulkBatchId.value = path.split('/')[3]
+    const batchId = path.split('/')[3]
+    routeBulkBatchId.value = null
+    globalThis.history.replaceState({}, '', `/app/bulk-screening?batch=${encodeURIComponent(batchId)}`)
     return 'staffBulkScreening'
   }
   if (path === '/app/assessments') return 'staffAssessments'
@@ -569,9 +574,11 @@ async function bootstrap() {
 
 async function loadForRoute() {
   if (route.value === 'showcaseScreening') {
-    await loadShowcaseFormats()
-    await loadShowcaseBatchFromQuery()
-    manageShowcasePolling()
+    if (showcaseLegacyVisible.value) {
+      await loadShowcaseFormats()
+      await loadShowcaseBatchFromQuery()
+      manageShowcasePolling()
+    }
     return
   }
   if (['publicHome', 'publicJobs'].includes(route.value)) await loadPublicJobs()
@@ -587,7 +594,7 @@ async function loadForRoute() {
   if (route.value === 'staffApplicationWorkspace' && routeApplicationId.value) {
     await openApplicationWorkspace(routeApplicationId.value)
   }
-  if (route.value === 'staffBulkScreening' || route.value === 'staffBulkScreeningNew') await loadBulkScreening()
+  if (route.value === 'staffBulkScreeningNew') await loadBulkScreening()
 }
 
 async function loadPublicJobs() {
@@ -1606,6 +1613,8 @@ onBeforeUnmount(() => {
 <template>
   <main class="h-screen overflow-hidden bg-surface-base text-ink-gray-9">
     <section v-if="route === 'showcaseScreening'" class="h-full overflow-y-auto">
+      <BulkScreeningShowcase />
+      <template v-if="showcaseLegacyVisible">
       <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-8 sm:px-6 lg:px-8">
         <header class="mb-7 space-y-2">
           <Badge label="Screening support only" variant="subtle" theme="gray" />
@@ -1782,6 +1791,7 @@ onBeforeUnmount(() => {
           </section>
         </section>
       </div>
+      </template>
     </section>
 
     <section v-else-if="!route.startsWith('staff') || route === 'staffLogin'" class="h-full overflow-y-auto">
@@ -2114,7 +2124,7 @@ onBeforeUnmount(() => {
       <PageHeader>
         <h1 class="truncate text-2xl font-semibold text-ink-gray-8">{{ staffPageTitle }}</h1>
         <Button v-if="route === 'staffJobs'" label="New job" icon-left="lucide-plus" variant="solid" theme="gray" @click="showJobEditor = !showJobEditor" />
-        <Button v-if="route === 'staffBulkScreening'" label="New Screening" icon-left="lucide-plus" variant="solid" theme="gray" @click="newBulkScreening" />
+        <Button v-if="bulkLegacyVisible && route === 'staffBulkScreening'" label="New Screening" icon-left="lucide-plus" variant="solid" theme="gray" @click="newBulkScreening" />
       </PageHeader>
       <template v-if="isCompactViewport" #nav>
         <div class="overflow-x-auto border-t border-outline-gray-1 bg-surface-base">
@@ -2232,7 +2242,11 @@ onBeforeUnmount(() => {
           <Alert v-else title="No applications match your filters" theme="gray" />
         </section>
 
-        <section v-if="route === 'staffBulkScreening' && !routeBulkBatchId" class="space-y-5">
+        <section v-if="route === 'staffBulkScreening'" class="space-y-6">
+          <BulkScreeningShowcase compact />
+        </section>
+
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreening' && !routeBulkBatchId" class="space-y-5">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <Badge label="HR only" variant="subtle" theme="gray" />
@@ -2306,7 +2320,7 @@ onBeforeUnmount(() => {
           <Alert v-else title="No bulk screening batches yet" description="Create a new screening batch from an approved job or an ad-hoc JD." theme="gray" />
         </section>
 
-        <section v-if="route === 'staffBulkScreeningNew'" class="max-w-5xl space-y-7">
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreeningNew'" class="max-w-5xl space-y-7">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 class="text-xl font-semibold text-ink-gray-8">{{ selectedBulkBatch ? selectedBulkBatch.title : 'New screening batch' }}</h2>
@@ -2489,7 +2503,7 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-if="route === 'staffBulkScreening' && selectedBulkBatch && routeBulkBatchId" class="space-y-7">
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreening' && selectedBulkBatch && routeBulkBatchId" class="space-y-7">
           <Breadcrumbs :items="[{ label: 'Bulk Screening', route: '/app/bulk-screening' }, { label: selectedBulkBatch.title }]" />
           <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>

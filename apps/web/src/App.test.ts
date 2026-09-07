@@ -631,36 +631,47 @@ describe('Hiring Platform product shell', () => {
     await input.trigger('change')
   }
 
-  it('renders the standalone bulk screening showcase by default without dashboard or sidebar chrome', async () => {
+  it('renders a public careers portal by default', async () => {
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
     expect(globalThis.location.pathname).toBe('/')
+    expect(wrapper.text()).toContain('University Careers')
+    expect(wrapper.text()).toContain('Open recruitment at MIT-ADT University')
+    expect(wrapper.text()).toContain('Assistant Professor')
+    expect(wrapper.text()).toContain('Staff Sign In')
+    expect(wrapper.text()).not.toContain('Candidate Portal')
+    expect(wrapper.text()).not.toContain('Actor')
+    expect(wrapper.text()).not.toContain('Run Worker Once')
+    expect(wrapper.text()).not.toContain('Queue Screening')
+  })
+
+  it('renders the standalone bulk screening showcase without dashboard or sidebar chrome', async () => {
+    globalThis.history.pushState({}, '', '/screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
     expect(wrapper.text()).toContain('Bulk Resume Screening')
-    expect(wrapper.text()).toContain('Upload a job description and resumes to screen candidates against the role.')
     expect(wrapper.text()).toContain('Job Description')
     expect(wrapper.text()).toContain('Resumes')
     expect(wrapper.text()).toContain('Start Screening')
     expect(wrapper.text()).not.toContain('Recruitment dashboard')
     expect(wrapper.text()).not.toContain('Dashboard')
     expect(wrapper.text()).not.toContain('Staff Sign In')
-    expect(wrapper.text()).not.toContain('Bulk screening history')
     expect(wrapper.find('aside').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('Actor')
-    expect(wrapper.text()).not.toContain('Run Worker Once')
-    expect(wrapper.text()).not.toContain('Queue Screening')
   })
 
-  it('loads a completed showcase batch directly from the batch query parameter', async () => {
-    globalThis.history.pushState({}, '', '/?batch=bulk-1')
+  it('loads a completed showcase batch directly from the standalone batch query parameter', async () => {
+    globalThis.history.pushState({}, '', '/screening?batch=bulk-1')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
     expect(apiMock.bulkBatch).toHaveBeenCalledWith('bulk-1')
-    expect(wrapper.text()).toContain('Bulk Resume Screening')
     expect(wrapper.text()).toContain('Does Not Meet')
     expect(wrapper.text()).toContain('Needs Review')
     expect(wrapper.text()).toContain('Meets Criteria')
@@ -671,6 +682,31 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Choose Resumes')
     expect(wrapper.text()).not.toContain('Dashboard')
     expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('opens approved bulk screening from the dashboard navigation', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('Bulk Screening'))?.trigger('click')
+    await flushPromises()
+
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+    expect(wrapper.text()).toContain('Dashboard')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Job Description')
+    expect(wrapper.text()).toContain('Resumes')
+    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+    expect(wrapper.text()).not.toContain('Create Batch')
+    expect(wrapper.text()).not.toContain('Extract Criteria')
   })
 
   it('clears the showcase batch query parameter when starting a new screening', async () => {
@@ -690,7 +726,7 @@ describe('Hiring Platform product shell', () => {
 
   it('shows a safe fallback when a showcase batch query parameter cannot be loaded', async () => {
     apiMock.bulkBatch.mockRejectedValueOnce(new Error('404 raw backend detail'))
-    globalThis.history.pushState({}, '', '/?batch=missing-batch')
+    globalThis.history.pushState({}, '', '/screening?batch=missing-batch')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
@@ -909,7 +945,7 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('NOT_SCHEDULED')
   })
 
-  it('renders bulk screening history without inline composer or selected result detail', async () => {
+  it('renders dashboard bulk screening as the simplified showcase upload flow', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -923,69 +959,50 @@ describe('Hiring Platform product shell', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Bulk screening')
-    expect(wrapper.text()).toContain('Full Stack Engineering Screening Batch With Long Academic Department Title')
-    expect(wrapper.text()).toContain('Resume draft')
-    expect(wrapper.text()).toContain('Discard screening')
-    expect(wrapper.text()).toContain('Archive screening')
-    expect(wrapper.text()).toContain('New Screening')
-    expect(wrapper.text()).not.toContain('Total resumes')
-    expect(wrapper.text()).not.toContain('Export Results')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Job Description')
+    expect(wrapper.text()).toContain('Resumes')
+    expect(wrapper.text()).toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('Full Stack Engineering Screening Batch With Long Academic Department Title')
+    expect(wrapper.text()).not.toContain('Resume draft')
+    expect(wrapper.text()).not.toContain('Discard screening')
+    expect(wrapper.text()).not.toContain('Archive screening')
     expect(wrapper.text()).not.toContain('Create Batch')
-    expect(wrapper.text()).not.toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('Extract Criteria')
+    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
   })
 
-  it('renders bulk screening detail as a dedicated score-free result view', async () => {
+  it('loads dashboard bulk screening results from the batch query parameter', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
       full_name: 'Recruiter User',
       roles: ['hr_recruiter']
     })
-    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Total resumes')
-    expect(wrapper.text()).toContain('Meets Screening Criteria')
-    expect(wrapper.text()).toContain('Does Not Meet Screening Criteria')
+    expect(apiMock.bulkBatch).toHaveBeenCalledWith('bulk-1')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Does Not Meet')
     expect(wrapper.text()).toContain('Needs Review')
+    expect(wrapper.text()).toContain('Meets Criteria')
     expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
-    expect(wrapper.text()).toContain('Export Results')
-    expect(wrapper.text()).toContain('Archive screening')
-    expect(wrapper.text()).toContain('View Evidence')
+    expect(wrapper.text()).toContain('Screening classification only. Final decisions remain with HR.')
     expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
     expect(wrapper.text()).not.toContain('Resume draft')
     expect(wrapper.text()).not.toContain('Create Batch')
-    expect(wrapper.text()).not.toContain('Queued resumes')
-    expect(wrapper.text()).not.toContain('Needs attention')
-    expect(wrapper.text()).not.toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('Export Results')
+    expect(wrapper.text()).not.toContain('View Evidence')
     expect(wrapper.text()).not.toContain('Score')
     expect(wrapper.text()).not.toContain('weighted')
     expect(wrapper.text()).not.toContain('90%')
   })
 
-  it('renders new bulk screening workflow on its own route', async () => {
-    apiMock.me.mockResolvedValue({
-      id: 'recruiter-1',
-      email: 'recruiter@example.org',
-      full_name: 'Recruiter User',
-      roles: ['hr_recruiter']
-    })
-    globalThis.history.pushState({}, '', '/app/bulk-screening/new')
-
-    const App = (await import('./App.vue')).default
-    const wrapper = mount(App)
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('New screening batch')
-    expect(wrapper.text()).toContain('Create Batch')
-    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
-    expect(wrapper.text()).not.toContain('Total resumes')
-  })
-
-  it('renders long bulk evidence as compact summaries with provenance behind one disclosure per criterion', async () => {
+  it('maps legacy dashboard bulk result paths to the simplified batch query route', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -998,31 +1015,34 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper
-      .findAll('button')
-      .filter((button) => button.text() === 'View Evidence')[1]
-      ?.trigger('click')
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+    expect(globalThis.location.search).toBe('?batch=bulk-1')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Does Not Meet')
+    expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+    expect(wrapper.text()).not.toContain('Create Batch')
+  })
+
+  it('keeps the simplified dashboard bulk screening route free of evidence dossier clutter', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain(
-      'Required full-stack engineering experience with React, Node.js, SQL, deployment ownership and maintainable production delivery'
-    )
-    expect(wrapper.text()).toContain('Evidence found')
-    expect(wrapper.text()).toContain('Resume not conclusive')
-    expect(wrapper.text()).toContain('Related experience')
-    expect(wrapper.text()).toContain('Interview / assessment follow-up')
-    expect(wrapper.text()).toContain('View 2 evidence details')
-    expect(wrapper.text()).toContain('Python scripting')
-    expect(wrapper.text()).toContain('backend ownership across validation and migrations')
-    expect(wrapper.text()).toContain('availability for campus interview')
-    expect(wrapper.text()).toContain('communication clarity during panel interview')
-    const badgeText = wrapper.findAll('.mock-badge').map((badge) => badge.text()).join(' ')
-    expect(badgeText).toContain('React')
-    expect(badgeText).not.toContain('Built React and Node.js systems with SQL-backed reporting')
-    expect(wrapper.text()).not.toContain('Matched evidence')
-    expect(wrapper.text()).not.toContain('Gaps')
-    expect(wrapper.text()).not.toContain('No adjacent signal recorded')
-    expect(wrapper.text()).not.toContain('No sufficient evidence')
+    expect(wrapper.text()).toContain('Aniket Dhole')
+    expect(wrapper.text()).toContain('Required React, Node.js and SQL evidence is present but needs HR review.')
+    expect(wrapper.text()).not.toContain('Evidence found')
+    expect(wrapper.text()).not.toContain('Resume not conclusive')
+    expect(wrapper.text()).not.toContain('Interview / assessment follow-up')
+    expect(wrapper.text()).not.toContain('View Evidence')
+    expect(wrapper.text()).not.toContain('page 1')
   })
 
   it('does not duplicate the filename when a bulk item has no candidate name', async () => {
@@ -1072,40 +1092,29 @@ describe('Hiring Platform product shell', () => {
     expect(historySource).not.toContain('Resume Draft')
   })
 
-  it('renders persisted bulk draft review with filenames and duplicate status', async () => {
+  it('maps the legacy new bulk screening route to the simplified upload form', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
       full_name: 'Recruiter User',
       roles: ['hr_recruiter']
     })
-    globalThis.history.pushState({}, '', '/app/bulk-screening')
+    globalThis.history.pushState({}, '', '/app/bulk-screening/new')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('Resume draft')
-
-    await wrapper.findAll('button').find((button) => button.text() === 'Resume draft')?.trigger('click')
     await flushPromises()
 
     expect(globalThis.location.pathname).toBe('/app/bulk-screening/new')
-    expect(wrapper.text()).toContain('Discard screening')
-    expect(wrapper.text()).toContain('Files supplied')
-    expect(wrapper.text()).toContain('Ready to screen')
-    expect(wrapper.text()).toContain('Vishakha-yawale.pdf')
-    expect(wrapper.text()).toContain('Vishakha-yawale-copy.pdf')
-    expect(wrapper.text()).toContain('Duplicate of Vishakha-yawale.pdf')
+    expect(wrapper.text()).toContain('Bulk Resume Screening')
+    expect(wrapper.text()).toContain('Choose JD')
+    expect(wrapper.text()).toContain('Choose Resumes')
     expect(wrapper.text()).toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('New screening batch')
+    expect(wrapper.text()).not.toContain('Create Batch')
   })
 
-  it('discards a draft screening and returns to bulk history', async () => {
-    const { dialog } = await import('frappe-ui')
-    vi.mocked(dialog.confirm).mockImplementation(({ onConfirm }) => {
-      void onConfirm?.({ close: vi.fn(), setError: vi.fn() })
-      return { close: vi.fn() }
-    })
+  it('does not expose old draft destructive actions on dashboard bulk screening', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -1118,39 +1127,13 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper.findAll('button').find((button) => button.text() === 'Discard screening')?.trigger('click')
-    await flushPromises()
-
-    expect(apiMock.discardBulkBatch).toHaveBeenCalledWith('bulk-draft')
-    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+    expect(wrapper.text()).not.toContain('Discard screening')
+    expect(wrapper.text()).not.toContain('Archive screening')
+    expect(apiMock.discardBulkBatch).not.toHaveBeenCalled()
+    expect(apiMock.archiveBulkBatch).not.toHaveBeenCalled()
   })
 
-  it('archives a completed screening and returns to bulk history', async () => {
-    const { dialog } = await import('frappe-ui')
-    vi.mocked(dialog.confirm).mockImplementation(({ onConfirm }) => {
-      void onConfirm?.({ close: vi.fn(), setError: vi.fn() })
-      return { close: vi.fn() }
-    })
-    apiMock.me.mockResolvedValue({
-      id: 'recruiter-1',
-      email: 'recruiter@example.org',
-      full_name: 'Recruiter User',
-      roles: ['hr_recruiter']
-    })
-    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
-
-    const App = (await import('./App.vue')).default
-    const wrapper = mount(App)
-    await flushPromises()
-
-    await wrapper.findAll('button').find((button) => button.text() === 'Archive screening')?.trigger('click')
-    await flushPromises()
-
-    expect(apiMock.archiveBulkBatch).toHaveBeenCalledWith('bulk-1')
-    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
-  })
-
-  it('keeps queued bulk screening destructive action unavailable', async () => {
+  it('keeps queued dashboard bulk screening focused on progress without destructive controls', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -1158,18 +1141,19 @@ describe('Hiring Platform product shell', () => {
       roles: ['hr_recruiter']
     })
     apiMock.bulkBatch.mockResolvedValue({ ...bulkBatch, status: 'QUEUED', completed_count: 0, failed_count: 0 })
-    globalThis.history.pushState({}, '', '/app/bulk-screening/bulk-1')
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
 
     const App = (await import('./App.vue')).default
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Cancel screening')
+    expect(wrapper.text()).toContain('0 completed · 4 remaining')
     expect(wrapper.text()).not.toContain('Archive screening')
     expect(wrapper.text()).not.toContain('Discard screening')
+    expect(wrapper.text()).not.toContain('Cancel screening')
   })
 
-  it('does not move to bulk review from browser-only file selection', async () => {
+  it('does not move to old bulk review from browser-only file selection', async () => {
     apiMock.me.mockResolvedValue({
       id: 'recruiter-1',
       email: 'recruiter@example.org',
@@ -1182,11 +1166,9 @@ describe('Hiring Platform product shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
-    await flushPromises()
-
-    expect(globalThis.location.pathname).toBe('/app/bulk-screening/new')
-    expect(wrapper.text()).toContain('Create Batch')
+    expect(globalThis.location.pathname).toBe('/app/bulk-screening')
+    expect(wrapper.text()).toContain('Start Screening')
+    expect(wrapper.text()).not.toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Review before starting')
     expect(apiMock.addBulkResumes).not.toHaveBeenCalled()
     expect(apiMock.startBulkBatch).not.toHaveBeenCalled()
