@@ -17,6 +17,7 @@ import {
   MobileNavItem,
   MobileShell,
   PageHeader,
+  Progress,
   Sidebar,
   SidebarHeader,
   SidebarItem,
@@ -37,6 +38,7 @@ import type {
   AssessmentAttempt,
   BulkScreeningBatch,
   BulkScreeningItem,
+  BulkSupportedFormats,
   CandidateStatus,
   Job,
   RubricVersion,
@@ -45,8 +47,10 @@ import type {
   User
 } from './api/types'
 import StatusBadge from './components/StatusBadge.vue'
+import BulkScreeningShowcase from './components/BulkScreeningShowcase.vue'
 
 type RouteName =
+  | 'showcaseScreening'
   | 'publicHome'
   | 'publicJobs'
   | 'publicJobDetail'
@@ -110,6 +114,17 @@ const bulkTargetDesignation = ref('')
 const bulkPreflightIssues = ref<ApiErrorIssue[]>([])
 const isCompactViewport = ref(globalThis.innerWidth < 640)
 const bulkPollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
+const showcaseJdInput = ref<HTMLInputElement | null>(null)
+const showcaseResumeInput = ref<HTMLInputElement | null>(null)
+const showcaseJdFile = ref<File | null>(null)
+const showcaseResumeFiles = ref<File[]>([])
+const showcaseBatch = ref<BulkScreeningBatch | null>(null)
+const showcaseTargetDesignation = ref('')
+const showcaseDesignationOptions = ref<{ label: string; value: string }[]>([])
+const showcaseFormats = ref<BulkSupportedFormats | null>(null)
+const showcasePollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
+const showcaseLegacyVisible = computed(() => false)
+const bulkLegacyVisible = computed(() => false)
 
 const publicFilter = reactive({ search: '', location: '', employment_type: '' })
 const staffJobFilter = reactive({ search: '', status: '' })
@@ -346,6 +361,39 @@ const bulkResultSummary = computed(() => ({
   unsupported: selectedBulkBatch.value?.unsupported_count ?? 0,
   technicalFailures: selectedBulkBatch.value?.failed_count ?? 0
 }))
+const showcaseResumeCount = computed(() => showcaseResumeFiles.value.length)
+const showcaseCanStart = computed(
+  () =>
+    !!showcaseJdFile.value &&
+    showcaseResumeFiles.value.length > 0 &&
+    !loading.value &&
+    (!showcaseDesignationOptions.value.length || !!showcaseTargetDesignation.value)
+)
+const showcaseProgressValue = computed(() => {
+  const batch = showcaseBatch.value
+  if (!batch?.accepted_count) return 0
+  return Math.round(((batch.completed_count + batch.failed_count) / batch.accepted_count) * 100)
+})
+const showcaseProgressText = computed(() => {
+  const batch = showcaseBatch.value
+  if (!batch) return 'No screening started'
+  const completed = batch.completed_count + batch.failed_count
+  const remaining = Math.max(batch.accepted_count - completed, 0)
+  return `${completed} completed · ${remaining} remaining`
+})
+const showcaseDuplicateText = computed(() => {
+  const duplicates = showcaseBatch.value?.duplicate_count ?? 0
+  return duplicates ? `${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped` : ''
+})
+const showcaseColumns: {
+  key: NonNullable<BulkScreeningItem['classification']>
+  title: string
+  theme: 'gray' | 'amber' | 'green'
+}[] = [
+  { key: 'DOES_NOT_MEET_CRITERIA' as const, title: 'Does Not Meet', theme: 'gray' },
+  { key: 'NEEDS_REVIEW' as const, title: 'Needs Review', theme: 'amber' },
+  { key: 'MEETS_CRITERIA' as const, title: 'Meets Criteria', theme: 'green' }
+]
 const bulkEvidenceDialogOpen = computed({
   get: () => selectedBulkEvidenceItem.value !== null,
   set: (open: boolean) => {
@@ -407,6 +455,7 @@ function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId
 
 function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicationId?: string; batchId?: string } = {}) {
   const paths: Record<RouteName, string> = {
+    showcaseScreening: '/screening',
     publicHome: '/',
     publicJobs: '/jobs',
     publicJobDetail: `/jobs/${options.jobId ?? routeJobId.value ?? ''}`,
@@ -431,6 +480,7 @@ function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicati
 
 function routeFromLocation(): RouteName {
   const path = globalThis.location.pathname
+  if (path === '/screening') return 'showcaseScreening'
   if (path === '/login' || path === '/staff/login') return 'staffLogin'
   if (path === '/jobs') return 'publicJobs'
   if (path.startsWith('/jobs/') && path.endsWith('/apply')) {
@@ -466,10 +516,12 @@ function routeFromLocation(): RouteName {
   }
   if (path === '/app/bulk-screening/new') {
     routeBulkBatchId.value = null
-    return 'staffBulkScreeningNew'
+    return 'staffBulkScreening'
   }
   if (path.startsWith('/app/bulk-screening/')) {
-    routeBulkBatchId.value = path.split('/')[3]
+    const batchId = path.split('/')[3]
+    routeBulkBatchId.value = null
+    globalThis.history.replaceState({}, '', `/app/bulk-screening?batch=${encodeURIComponent(batchId)}`)
     return 'staffBulkScreening'
   }
   if (path === '/app/assessments') return 'staffAssessments'
@@ -508,6 +560,11 @@ async function bootstrap() {
     route.value = routeFromLocation()
     void loadForRoute()
   })
+  if (route.value === 'showcaseScreening') {
+    currentUser.value = await api.me().catch(() => null)
+    await loadForRoute()
+    return
+  }
   await run(async () => {
     currentUser.value = await api.me()
   })
@@ -516,6 +573,14 @@ async function bootstrap() {
 }
 
 async function loadForRoute() {
+  if (route.value === 'showcaseScreening') {
+    if (showcaseLegacyVisible.value) {
+      await loadShowcaseFormats()
+      await loadShowcaseBatchFromQuery()
+      manageShowcasePolling()
+    }
+    return
+  }
   if (['publicHome', 'publicJobs'].includes(route.value)) await loadPublicJobs()
   if ((route.value === 'publicJobDetail' || route.value === 'publicApply') && routeJobId.value) {
     await loadPublicJob(routeJobId.value)
@@ -529,7 +594,7 @@ async function loadForRoute() {
   if (route.value === 'staffApplicationWorkspace' && routeApplicationId.value) {
     await openApplicationWorkspace(routeApplicationId.value)
   }
-  if (route.value === 'staffBulkScreening' || route.value === 'staffBulkScreeningNew') await loadBulkScreening()
+  if (route.value === 'staffBulkScreeningNew') await loadBulkScreening()
 }
 
 async function loadPublicJobs() {
@@ -583,6 +648,116 @@ async function loadBulkScreening() {
     bulkWizardOpen.value = false
   }
   manageBulkPolling()
+}
+
+async function loadShowcaseFormats() {
+  if (showcaseFormats.value) return
+  const formats = await run(() => api.bulkSupportedFormats())
+  if (formats) showcaseFormats.value = formats
+}
+
+async function loadShowcaseBatchFromQuery() {
+  const batchId = new URLSearchParams(globalThis.location.search).get('batch')
+  if (!batchId || showcaseBatch.value?.id === batchId) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    showcaseBatch.value = await api.bulkBatch(batchId)
+  } catch {
+    showcaseBatch.value = null
+    errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+  } finally {
+    loading.value = false
+  }
+}
+
+function setShowcaseJdFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  showcaseJdFile.value = input.files?.[0] ?? null
+  showcaseDesignationOptions.value = []
+  showcaseTargetDesignation.value = ''
+  showcaseBatch.value = null
+}
+
+function setShowcaseResumeFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  showcaseResumeFiles.value = Array.from(input.files ?? [])
+  showcaseBatch.value = null
+}
+
+function removeShowcaseJd() {
+  showcaseJdFile.value = null
+  showcaseDesignationOptions.value = []
+  showcaseTargetDesignation.value = ''
+  if (showcaseJdInput.value) showcaseJdInput.value.value = ''
+}
+
+function clearShowcaseResumes() {
+  showcaseResumeFiles.value = []
+  if (showcaseResumeInput.value) showcaseResumeInput.value.value = ''
+}
+
+async function startShowcaseScreening() {
+  if (!showcaseJdFile.value || !showcaseResumeFiles.value.length) return
+  loading.value = true
+  message.value = ''
+  errorMessage.value = ''
+  try {
+    const batch = await api.simpleBulkScreening(
+      showcaseJdFile.value,
+      showcaseResumeFiles.value,
+      showcaseTargetDesignation.value || null
+    )
+    showcaseBatch.value = batch
+    showcaseDesignationOptions.value = []
+    errorMessage.value = ''
+    manageShowcasePolling()
+  } catch (error) {
+    const apiError = error as Pick<ApiError, 'code' | 'issues'>
+    if (apiError.code === 'TARGET_DESIGNATION_REQUIRED') {
+      const options = apiError.issues?.find((issue) => issue.options?.length)?.options ?? []
+      showcaseDesignationOptions.value = options.map((value) => ({ label: value, value }))
+      errorMessage.value = 'Choose a target designation before screening this JD.'
+    } else {
+      errorMessage.value = "We couldn't prepare this job description for screening. Please try another JD."
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+function resetShowcaseScreening() {
+  showcaseBatch.value = null
+  showcaseJdFile.value = null
+  showcaseResumeFiles.value = []
+  showcaseTargetDesignation.value = ''
+  showcaseDesignationOptions.value = []
+  errorMessage.value = ''
+  message.value = ''
+  if (globalThis.location.search) globalThis.history.replaceState({}, '', globalThis.location.pathname)
+  if (showcaseJdInput.value) showcaseJdInput.value.value = ''
+  if (showcaseResumeInput.value) showcaseResumeInput.value.value = ''
+  manageShowcasePolling()
+}
+
+async function refreshShowcaseBatch() {
+  if (!showcaseBatch.value) return
+  const batch = await api.bulkBatch(showcaseBatch.value.id)
+  showcaseBatch.value = batch
+  manageShowcasePolling()
+}
+
+function manageShowcasePolling() {
+  if (showcasePollHandle.value !== null) {
+    globalThis.clearInterval(showcasePollHandle.value)
+    showcasePollHandle.value = null
+  }
+  const status = showcaseBatch.value?.status
+  if (route.value === 'showcaseScreening' && showcaseBatch.value && ['QUEUED', 'RUNNING'].includes(status ?? '')) {
+    showcasePollHandle.value = globalThis.setInterval(() => {
+      void refreshShowcaseBatch()
+    }, 3000)
+  }
 }
 
 async function login() {
@@ -1150,6 +1325,41 @@ function bulkClassificationLabel(value: string | null | undefined) {
   return stageLabel(value)
 }
 
+function showcaseItemsFor(classification: BulkScreeningItem['classification']) {
+  const items = showcaseBatch.value?.items ?? []
+  if (classification === 'NEEDS_REVIEW') {
+    return items.filter(
+      (item) =>
+        item.classification === 'NEEDS_REVIEW' ||
+        item.status === 'FAILED' ||
+        item.status === 'UNSUPPORTED' ||
+        item.status === 'DUPLICATE'
+    )
+  }
+  return items.filter((item) => item.classification === classification)
+}
+
+function showcaseCandidateReason(item: BulkScreeningItem) {
+  if (item.status === 'FAILED') {
+    return 'Screening could not be completed for this resume because of a technical processing issue. Review or retry this candidate manually.'
+  }
+  if (item.status === 'DUPLICATE') return 'This resume appears to duplicate another uploaded resume, so it was skipped.'
+  if (item.status === 'UNSUPPORTED') return 'This file could not be screened in the current supported resume format. Review it manually.'
+  return humanizeScreeningText(item.concise_reason ?? item.warnings[0] ?? bulkClassificationLabel(item.classification))
+}
+
+function showcaseAccepts(kind: 'jd' | 'resume') {
+  const formats = kind === 'jd' ? showcaseFormats.value?.jd : showcaseFormats.value?.resumes
+  return (formats?.length ? formats : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf']).join(',')
+}
+
+function showcaseFormatsLabel(kind: 'jd' | 'resume') {
+  const formats = kind === 'jd' ? showcaseFormats.value?.jd : showcaseFormats.value?.resumes
+  return (formats?.length ? formats : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf'])
+    .join(', ')
+    .toUpperCase()
+}
+
 function bulkUploadedCount() {
   return bulkResumeFiles.value.length + bulkFolderFiles.value.length + (bulkZipFile.value ? 1 : 0)
 }
@@ -1396,12 +1606,195 @@ onMounted(() => {
 onBeforeUnmount(() => {
   globalThis.removeEventListener('resize', updateViewportState)
   if (bulkPollHandle.value !== null) globalThis.clearInterval(bulkPollHandle.value)
+  if (showcasePollHandle.value !== null) globalThis.clearInterval(showcasePollHandle.value)
 })
 </script>
 
 <template>
   <main class="h-screen overflow-hidden bg-surface-base text-ink-gray-9">
-    <section v-if="!route.startsWith('staff') || route === 'staffLogin'" class="h-full overflow-y-auto">
+    <section v-if="route === 'showcaseScreening'" class="h-full overflow-y-auto">
+      <BulkScreeningShowcase />
+      <template v-if="showcaseLegacyVisible">
+      <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-8 sm:px-6 lg:px-8">
+        <header class="mb-7 space-y-2">
+          <Badge label="Screening support only" variant="subtle" theme="gray" />
+          <h1 class="text-2xl font-semibold text-ink-gray-9 sm:text-3xl">Bulk Resume Screening</h1>
+          <p class="text-p-base text-ink-gray-6">
+            Upload a job description and resumes to screen candidates against the role.
+          </p>
+        </header>
+
+        <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mb-4" />
+        <Button
+          v-if="errorMessage && !showcaseBatch"
+          label="New Screening"
+          variant="subtle"
+          theme="gray"
+          class="mb-4"
+          @click="resetShowcaseScreening"
+        />
+
+        <section v-if="!showcaseBatch" class="space-y-6">
+          <div class="grid gap-4 lg:grid-cols-2">
+            <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h2 class="text-lg-semibold text-ink-gray-8">Job Description</h2>
+                  <p class="mt-1 text-p-sm text-ink-gray-5">{{ showcaseFormatsLabel('jd') }}</p>
+                </div>
+                <Button
+                  :label="showcaseJdFile ? 'Replace' : 'Choose JD'"
+                  variant="subtle"
+                  theme="gray"
+                  @click="showcaseJdInput?.click()"
+                />
+              </div>
+              <input
+                ref="showcaseJdInput"
+                data-testid="showcase-jd-input"
+                class="sr-only"
+                type="file"
+                :accept="showcaseAccepts('jd')"
+                @change="setShowcaseJdFile"
+              >
+              <div class="min-h-12 rounded border border-dashed border-outline-gray-2 bg-surface-gray-1 px-3 py-3">
+                <div v-if="showcaseJdFile" class="flex min-w-0 items-center justify-between gap-3">
+                  <span class="truncate text-base-medium text-ink-gray-8">{{ showcaseJdFile.name }}</span>
+                  <Button label="Remove" variant="ghost" theme="gray" @click="removeShowcaseJd" />
+                </div>
+                <p v-else class="text-p-sm text-ink-gray-5">Select one JD file.</p>
+              </div>
+              <FormControl
+                v-if="showcaseDesignationOptions.length"
+                v-model="showcaseTargetDesignation"
+                type="select"
+                label="Screening for"
+                :options="[{ label: 'Choose designation', value: '' }, ...showcaseDesignationOptions]"
+                required
+              />
+            </section>
+
+            <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h2 class="text-lg-semibold text-ink-gray-8">Resumes</h2>
+                  <p class="mt-1 text-p-sm text-ink-gray-5">{{ showcaseFormatsLabel('resume') }}</p>
+                </div>
+                <Button
+                  :label="showcaseResumeFiles.length ? 'Replace' : 'Choose Resumes'"
+                  variant="subtle"
+                  theme="gray"
+                  @click="showcaseResumeInput?.click()"
+                />
+              </div>
+              <input
+                ref="showcaseResumeInput"
+                data-testid="showcase-resume-input"
+                class="sr-only"
+                type="file"
+                :accept="showcaseAccepts('resume')"
+                multiple
+                @change="setShowcaseResumeFiles"
+              >
+              <div class="min-h-12 rounded border border-dashed border-outline-gray-2 bg-surface-gray-1 px-3 py-3">
+                <div v-if="showcaseResumeFiles.length" class="space-y-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="text-base-medium text-ink-gray-8">
+                      {{ showcaseResumeCount }} resume{{ showcaseResumeCount === 1 ? '' : 's' }} selected
+                    </span>
+                    <Button label="Clear" variant="ghost" theme="gray" @click="clearShowcaseResumes" />
+                  </div>
+                  <div class="space-y-1">
+                    <p
+                      v-for="file in showcaseResumeFiles.slice(0, 4)"
+                      :key="`${file.name}-${file.size}`"
+                      class="truncate text-p-sm text-ink-gray-6"
+                    >
+                      {{ file.name }}
+                    </p>
+                    <p v-if="showcaseResumeFiles.length > 4" class="text-p-sm text-ink-gray-5">
+                      +{{ showcaseResumeFiles.length - 4 }} more
+                    </p>
+                  </div>
+                </div>
+                <p v-else class="text-p-sm text-ink-gray-5">Select one or more resume PDFs.</p>
+              </div>
+            </section>
+          </div>
+
+          <div class="flex justify-center">
+            <Button
+              label="Start Screening"
+              variant="solid"
+              theme="gray"
+              size="md"
+              :loading="loading"
+              :disabled="!showcaseCanStart"
+              @click="startShowcaseScreening"
+            />
+          </div>
+        </section>
+
+        <section v-else class="space-y-7">
+          <section class="space-y-3 rounded border border-outline-gray-1 bg-surface-base p-5">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 class="text-lg-semibold text-ink-gray-8">
+                  Screening {{ showcaseBatch.accepted_count }} resume{{ showcaseBatch.accepted_count === 1 ? '' : 's' }}
+                </h2>
+                <p class="mt-1 text-p-sm text-ink-gray-5">{{ showcaseProgressText }}</p>
+                <p v-if="showcaseDuplicateText" class="mt-1 text-p-sm text-ink-gray-5">{{ showcaseDuplicateText }}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <Badge :label="stageLabel(showcaseBatch.status)" variant="subtle" theme="gray" />
+                <Button
+                  v-if="['COMPLETED', 'FAILED'].includes(showcaseBatch.status)"
+                  label="New Screening"
+                  variant="subtle"
+                  theme="gray"
+                  @click="resetShowcaseScreening"
+                />
+              </div>
+            </div>
+            <Progress :value="showcaseProgressValue" size="md" label="" hint />
+          </section>
+
+          <p class="text-p-sm text-ink-gray-5">Screening classification only. Final decisions remain with HR.</p>
+
+          <section class="grid gap-4 lg:grid-cols-3">
+            <section
+              v-for="column in showcaseColumns"
+              :key="column.key"
+              class="min-w-0 space-y-3 rounded border border-outline-gray-1 bg-surface-base p-4"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <h2 class="text-base-medium text-ink-gray-8">{{ column.title }}</h2>
+                <Badge :label="String(showcaseItemsFor(column.key).length)" variant="subtle" :theme="column.theme" />
+              </div>
+              <div v-if="showcaseItemsFor(column.key).length" class="space-y-3">
+                <article
+                  v-for="item in showcaseItemsFor(column.key)"
+                  :key="item.id"
+                  class="space-y-2 rounded border border-outline-gray-1 bg-surface-gray-1 p-3"
+                >
+                  <div class="flex min-w-0 items-start justify-between gap-2">
+                    <h3 class="min-w-0 truncate text-base-medium text-ink-gray-8">{{ bulkItemTitle(item) }}</h3>
+                    <Badge :label="column.title" variant="subtle" :theme="column.theme" />
+                  </div>
+                  <p class="line-clamp-3 text-p-sm leading-5 text-ink-gray-6">{{ showcaseCandidateReason(item) }}</p>
+                </article>
+              </div>
+              <p v-else class="rounded border border-dashed border-outline-gray-2 px-3 py-8 text-center text-p-sm text-ink-gray-5">
+                No resumes in this group.
+              </p>
+            </section>
+          </section>
+        </section>
+      </div>
+      </template>
+    </section>
+
+    <section v-else-if="!route.startsWith('staff') || route === 'staffLogin'" class="h-full overflow-y-auto">
       <PageHeader>
         <Button variant="ghost" theme="gray" @click="navigate('publicHome')">
           <span class="flex items-center gap-2">
@@ -1731,7 +2124,7 @@ onBeforeUnmount(() => {
       <PageHeader>
         <h1 class="truncate text-2xl font-semibold text-ink-gray-8">{{ staffPageTitle }}</h1>
         <Button v-if="route === 'staffJobs'" label="New job" icon-left="lucide-plus" variant="solid" theme="gray" @click="showJobEditor = !showJobEditor" />
-        <Button v-if="route === 'staffBulkScreening'" label="New Screening" icon-left="lucide-plus" variant="solid" theme="gray" @click="newBulkScreening" />
+        <Button v-if="bulkLegacyVisible && route === 'staffBulkScreening'" label="New Screening" icon-left="lucide-plus" variant="solid" theme="gray" @click="newBulkScreening" />
       </PageHeader>
       <template v-if="isCompactViewport" #nav>
         <div class="overflow-x-auto border-t border-outline-gray-1 bg-surface-base">
@@ -1849,7 +2242,11 @@ onBeforeUnmount(() => {
           <Alert v-else title="No applications match your filters" theme="gray" />
         </section>
 
-        <section v-if="route === 'staffBulkScreening' && !routeBulkBatchId" class="space-y-5">
+        <section v-if="route === 'staffBulkScreening'" class="space-y-6">
+          <BulkScreeningShowcase compact />
+        </section>
+
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreening' && !routeBulkBatchId" class="space-y-5">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <Badge label="HR only" variant="subtle" theme="gray" />
@@ -1923,7 +2320,7 @@ onBeforeUnmount(() => {
           <Alert v-else title="No bulk screening batches yet" description="Create a new screening batch from an approved job or an ad-hoc JD." theme="gray" />
         </section>
 
-        <section v-if="route === 'staffBulkScreeningNew'" class="max-w-5xl space-y-7">
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreeningNew'" class="max-w-5xl space-y-7">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 class="text-xl font-semibold text-ink-gray-8">{{ selectedBulkBatch ? selectedBulkBatch.title : 'New screening batch' }}</h2>
@@ -2106,7 +2503,7 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-if="route === 'staffBulkScreening' && selectedBulkBatch && routeBulkBatchId" class="space-y-7">
+        <section v-if="bulkLegacyVisible && route === 'staffBulkScreening' && selectedBulkBatch && routeBulkBatchId" class="space-y-7">
           <Breadcrumbs :items="[{ label: 'Bulk Screening', route: '/app/bulk-screening' }, { label: selectedBulkBatch.title }]" />
           <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>

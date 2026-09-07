@@ -3,6 +3,7 @@ import type {
   AssessmentAssignment,
   AssessmentAttempt,
   BulkScreeningBatch,
+  BulkSupportedFormats,
   CandidateStatus,
   DocumentRead,
   Job,
@@ -240,8 +241,18 @@ export const api = {
   listBulkBatches() {
     return request<BulkScreeningBatch[]>('/api/bulk-screening/batches')
   },
+  bulkSupportedFormats() {
+    return request<BulkSupportedFormats>('/api/bulk-screening/formats')
+  },
   bulkBatch(batchId: string) {
     return request<BulkScreeningBatch>(`/api/bulk-screening/batches/${batchId}`)
+  },
+  simpleBulkScreening(jdFile: File, files: File[], targetDesignation: string | null = null) {
+    const formData = new FormData()
+    formData.append('jd_file', jdFile)
+    files.forEach((file) => formData.append('files', file))
+    if (targetDesignation) formData.append('target_designation', targetDesignation)
+    return requestForm<BulkScreeningBatch>('/api/bulk-screening/simple', formData)
   },
   createExistingJobBulkBatch(jobId: string) {
     const formData = new FormData()

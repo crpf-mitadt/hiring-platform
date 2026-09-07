@@ -35,6 +35,18 @@ def _create_existing_batch(client, actor_id: str, job_id: str, files=None):
     )
 
 
+def _create_simple_batch(client, actor_id: str, jd_content: bytes, files, target_designation: str | None = None):
+    data = {}
+    if target_designation:
+        data["target_designation"] = target_designation
+    return client.post(
+        "/api/bulk-screening/simple",
+        headers={"X-Actor-Id": actor_id},
+        data=data,
+        files=[("jd_file", ("faculty-jd.txt", jd_content, "text/plain")), *files],
+    )
+
+
 def _upload_resumes(client, actor_id: str, batch_id: str, files):
     return client.post(
         f"/api/bulk-screening/batches/{batch_id}/resumes",
@@ -259,6 +271,184 @@ def test_bulk_screening_ad_hoc_jd_requires_confirmation_before_resumes(client, u
     assert started.json()["status"] == "QUEUED"
 
 
+def test_simple_bulk_screening_creates_ad_hoc_batch_and_queues_one_resume(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("candidate.pdf")],
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source_type"] == "ADHOC_JD"
+    assert body["status"] == "QUEUED"
+    assert body["criteria_confirmed_at"] is not None
+    assert body["accepted_count"] == 1
+    assert body["items"][0]["original_filename"] == "candidate.pdf"
+    assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 1
+
+
+def test_simple_bulk_screening_handles_multiple_resumes_and_dedupe(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [
+            _resume_file("first.pdf", b"%PDF-1.4 same resume"),
+            _resume_file("first-copy.pdf", b"%PDF-1.4 same resume"),
+            _resume_file("second.pdf", b"%PDF-1.4 different resume"),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "QUEUED"
+    assert body["total_files"] == 3
+    assert body["accepted_count"] == 2
+    assert body["duplicate_count"] == 1
+    assert [item["status"] for item in body["items"]].count("DUPLICATE") == 1
+    assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 2
+
+
+def test_simple_bulk_screening_reconciles_deterministic_mandatory_criteria(client, monkeypatch, users):
+    monkeypatch.setattr(
+        "app.services.bulk_screening._generate_ad_hoc_structured_jd",
+        lambda _document: {
+            "schema_version": "structured-jd-v1",
+            "job_id": "adhoc",
+            "source_document_id": "jd",
+            "extraction_method": "live_gemma",
+            "job_title": "Assistant Professor",
+            "department": "Faculty",
+            "mandatory_requirements": [
+                {
+                    "requirement_id": "req_007",
+                    "category": "research",
+                    "description": "2+ papers in Scopus/WoS",
+                    "requirement_type": "minimum",
+                    "mandatory": True,
+                    "preferred": False,
+                }
+            ],
+            "preferred_requirements": [],
+            "scoring_rubric": [
+                {
+                    "criterion_id": "crit_004",
+                    "name": "Research & Innovation",
+                    "category": "research",
+                    "description": "Research output",
+                    "weight": 100,
+                    "mandatory": False,
+                    "requirement_ids": ["req_007"],
+                }
+            ],
+        },
+    )
+
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"research JD",
+        [_resume_file("candidate.pdf")],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "QUEUED"
+    assert response.json()["criteria_snapshot"][0]["mandatory"] is True
+
+
+def test_simple_bulk_screening_requires_designation_for_multi_rank_jd(client, monkeypatch, users):
+    monkeypatch.setattr(
+        "app.services.bulk_screening._generate_ad_hoc_structured_jd",
+        lambda _document: _multi_designation_structured_jd(),
+    )
+
+    missing_target = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"assistant associate professor",
+        [_resume_file("candidate.pdf")],
+    )
+    assistant = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"assistant associate professor",
+        [_resume_file("candidate.pdf")],
+        target_designation="Assistant Professor",
+    )
+
+    assert missing_target.status_code == 409
+    assert missing_target.json()["code"] == "TARGET_DESIGNATION_REQUIRED"
+    assert assistant.status_code == 200, assistant.text
+    assert assistant.json()["target_designation"] == "Assistant Professor"
+    assert assistant.json()["status"] == "QUEUED"
+
+
+def test_simple_bulk_screening_invalid_jd_preflight_prevents_resume_queueing(client, db_session, monkeypatch, users):
+    monkeypatch.setattr(
+        "app.services.bulk_screening._generate_ad_hoc_structured_jd",
+        lambda _document: {
+            "schema_version": "structured-jd-v1",
+            "job_id": "adhoc",
+            "source_document_id": "jd",
+            "extraction_method": "live_gemma",
+            "job_title": "Invalid JD",
+            "department": "Faculty",
+            "mandatory_requirements": ["not canonical"],
+            "scoring_rubric": [{"criterion_id": "bad", "name": "Bad", "category": "invalid", "weight": 100}],
+        },
+    )
+
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"invalid JD",
+        [_resume_file("candidate.pdf")],
+    )
+
+    assert response.status_code == 409
+    assert db_session.scalar(select(BulkScreeningWorkItem)) is None
+
+
+def test_simple_bulk_screening_processes_mock_results_into_final_classifications(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [
+            _resume_file("meets.pdf", b"%PDF-1.4 meets all required evidence"),
+            _resume_file("missing.pdf", b"%PDF-1.4 missing mandatory evidence"),
+            _resume_file("review.pdf", b"%PDF-1.4 ambiguous review evidence"),
+            _resume_file("technical.pdf", b"%PDF-1.4 provider failure"),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["id"]
+
+    while process_next_bulk_screening_jobs(db_session):
+        db_session.commit()
+
+    refreshed = client.get(
+        f"/api/bulk-screening/batches/{batch_id}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+
+    assert refreshed.status_code == 200, refreshed.text
+    body = refreshed.json()
+    assert body["status"] == "COMPLETED"
+    classifications = {item["original_filename"]: item["classification"] for item in body["items"]}
+    assert classifications["meets.pdf"] == "MEETS_CRITERIA"
+    assert classifications["missing.pdf"] == "DOES_NOT_MEET_CRITERIA"
+    assert classifications["review.pdf"] == "NEEDS_REVIEW"
+    assert classifications["technical.pdf"] == "NEEDS_REVIEW"
+    technical = next(item for item in body["items"] if item["original_filename"] == "technical.pdf")
+    assert technical["status"] == "FAILED"
+    assert "technical processing failure" in technical["concise_reason"]
+    assert "/home/" not in (technical["failure_message"] or "")
+    assert "Traceback" not in (technical["failure_message"] or "")
+
+
 def test_bulk_screening_handles_duplicates_and_unsupported_files_before_review(
     client,
     db_session,
@@ -355,8 +545,8 @@ def test_bulk_screening_processes_pass_fail_review_and_technical_failure(
     body = refreshed.json()
     by_file = {item["original_filename"]: item for item in body["items"]}
     assert by_file["meets.pdf"]["classification"] == "MEETS_CRITERIA"
-    assert by_file["missing.pdf"]["classification"] == "NEEDS_REVIEW"
-    assert "not demonstrated" in by_file["missing.pdf"]["concise_reason"].lower()
+    assert by_file["missing.pdf"]["classification"] == "DOES_NOT_MEET_CRITERIA"
+    assert "hard-gate" in by_file["missing.pdf"]["concise_reason"].lower()
     assert by_file["review.pdf"]["classification"] == "NEEDS_REVIEW"
     assert by_file["technical.pdf"]["classification"] == "NEEDS_REVIEW"
     assert by_file["technical.pdf"]["status"] == "FAILED"

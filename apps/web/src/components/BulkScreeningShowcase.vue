@@ -1,0 +1,346 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Badge, Button, ErrorMessage, FormControl, Progress } from 'frappe-ui'
+import { ApiError, api } from '../api/client'
+import type { BulkScreeningBatch, BulkScreeningItem, BulkSupportedFormats } from '../api/types'
+
+const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+
+const jdInput = ref<HTMLInputElement | null>(null)
+const resumeInput = ref<HTMLInputElement | null>(null)
+const jdFile = ref<File | null>(null)
+const resumeFiles = ref<File[]>([])
+const batch = ref<BulkScreeningBatch | null>(null)
+const targetDesignation = ref('')
+const designationOptions = ref<{ label: string; value: string }[]>([])
+const formats = ref<BulkSupportedFormats | null>(null)
+const pollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
+const loading = ref(false)
+const errorMessage = ref('')
+
+const resumeCount = computed(() => resumeFiles.value.length)
+const canStart = computed(
+  () =>
+    !!jdFile.value &&
+    resumeFiles.value.length > 0 &&
+    !loading.value &&
+    (!designationOptions.value.length || !!targetDesignation.value)
+)
+const progressValue = computed(() => {
+  if (!batch.value?.accepted_count) return 0
+  return Math.round(((batch.value.completed_count + batch.value.failed_count) / batch.value.accepted_count) * 100)
+})
+const progressText = computed(() => {
+  if (!batch.value) return 'No screening started'
+  const completed = batch.value.completed_count + batch.value.failed_count
+  const remaining = Math.max(batch.value.accepted_count - completed, 0)
+  return `${completed} completed · ${remaining} remaining`
+})
+const duplicateText = computed(() => {
+  const duplicates = batch.value?.duplicate_count ?? 0
+  return duplicates ? `${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped` : ''
+})
+const columns: {
+  key: NonNullable<BulkScreeningItem['classification']>
+  title: string
+  theme: 'gray' | 'amber' | 'green'
+}[] = [
+  { key: 'DOES_NOT_MEET_CRITERIA', title: 'Does Not Meet', theme: 'gray' },
+  { key: 'NEEDS_REVIEW', title: 'Needs Review', theme: 'amber' },
+  { key: 'MEETS_CRITERIA', title: 'Meets Criteria', theme: 'green' }
+]
+
+onMounted(async () => {
+  await loadFormats()
+  await loadBatchFromQuery()
+  managePolling()
+})
+
+onBeforeUnmount(() => {
+  if (pollHandle.value !== null) globalThis.clearInterval(pollHandle.value)
+})
+
+async function loadFormats() {
+  formats.value = await api.bulkSupportedFormats().catch(() => null)
+}
+
+async function loadBatchFromQuery() {
+  const batchId = new URLSearchParams(globalThis.location.search).get('batch')
+  if (!batchId) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    batch.value = await api.bulkBatch(batchId)
+  } catch {
+    batch.value = null
+    errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+  } finally {
+    loading.value = false
+  }
+}
+
+function setJdFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  jdFile.value = input.files?.[0] ?? null
+  designationOptions.value = []
+  targetDesignation.value = ''
+  batch.value = null
+}
+
+function setResumeFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  resumeFiles.value = Array.from(input.files ?? [])
+  batch.value = null
+}
+
+function removeJd() {
+  jdFile.value = null
+  designationOptions.value = []
+  targetDesignation.value = ''
+  if (jdInput.value) jdInput.value.value = ''
+}
+
+function clearResumes() {
+  resumeFiles.value = []
+  if (resumeInput.value) resumeInput.value.value = ''
+}
+
+async function startScreening() {
+  if (!jdFile.value || !resumeFiles.value.length) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    batch.value = await api.simpleBulkScreening(jdFile.value, resumeFiles.value, targetDesignation.value || null)
+    designationOptions.value = []
+    managePolling()
+  } catch (error) {
+    const apiError = error as Pick<ApiError, 'code' | 'issues'>
+    if (apiError.code === 'TARGET_DESIGNATION_REQUIRED') {
+      const options = apiError.issues?.find((issue) => issue.options?.length)?.options ?? []
+      designationOptions.value = options.map((value) => ({ label: value, value }))
+      errorMessage.value = 'Choose a target designation before screening this JD.'
+    } else {
+      errorMessage.value = "We couldn't prepare this job description for screening. Please try another JD."
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+function resetScreening() {
+  batch.value = null
+  jdFile.value = null
+  resumeFiles.value = []
+  targetDesignation.value = ''
+  designationOptions.value = []
+  errorMessage.value = ''
+  if (globalThis.location.search) globalThis.history.replaceState({}, '', globalThis.location.pathname)
+  if (jdInput.value) jdInput.value.value = ''
+  if (resumeInput.value) resumeInput.value.value = ''
+  managePolling()
+}
+
+async function refreshBatch() {
+  if (!batch.value) return
+  batch.value = await api.bulkBatch(batch.value.id)
+  managePolling()
+}
+
+function managePolling() {
+  if (pollHandle.value !== null) {
+    globalThis.clearInterval(pollHandle.value)
+    pollHandle.value = null
+  }
+  if (batch.value && ['QUEUED', 'RUNNING'].includes(batch.value.status)) {
+    pollHandle.value = globalThis.setInterval(() => {
+      void refreshBatch()
+    }, 3000)
+  }
+}
+
+function itemsFor(classification: BulkScreeningItem['classification']) {
+  const items = batch.value?.items ?? []
+  if (classification === 'NEEDS_REVIEW') {
+    return items.filter(
+      (item) =>
+        item.classification === 'NEEDS_REVIEW' ||
+        item.status === 'FAILED' ||
+        item.status === 'UNSUPPORTED' ||
+        item.status === 'DUPLICATE'
+    )
+  }
+  return items.filter((item) => item.classification === classification)
+}
+
+function candidateTitle(item: BulkScreeningItem) {
+  return item.candidate_name?.trim() || item.original_filename
+}
+
+function candidateReason(item: BulkScreeningItem) {
+  if (item.status === 'FAILED') {
+    return 'Screening could not be completed for this resume because of a technical processing issue. Review or retry this candidate manually.'
+  }
+  if (item.status === 'DUPLICATE') return 'This resume appears to duplicate another uploaded resume, so it was skipped.'
+  if (item.status === 'UNSUPPORTED') return 'This file could not be screened in the current supported resume format. Review it manually.'
+  return item.concise_reason?.trim() || 'Evidence is incomplete or ambiguous and requires HR review.'
+}
+
+function accepts(kind: 'jd' | 'resume') {
+  const available = kind === 'jd' ? formats.value?.jd : formats.value?.resumes
+  return (available?.length ? available : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf']).join(',')
+}
+
+function formatsLabel(kind: 'jd' | 'resume') {
+  const available = kind === 'jd' ? formats.value?.jd : formats.value?.resumes
+  return (available?.length ? available : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf'])
+    .join(', ')
+    .toUpperCase()
+}
+
+function stageLabel(value: string | null | undefined) {
+  if (!value) return 'Not started'
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+</script>
+
+<template>
+  <div class="mx-auto flex w-full max-w-6xl flex-col" :class="props.compact ? 'space-y-6' : 'min-h-full px-4 py-8 sm:px-6 lg:px-8'">
+    <header class="space-y-2">
+      <Badge label="Screening support only" variant="subtle" theme="gray" />
+      <h1 class="text-2xl font-semibold text-ink-gray-9 sm:text-3xl">Bulk Resume Screening</h1>
+      <p class="text-p-base text-ink-gray-6">Upload a job description and resumes to screen candidates against the role.</p>
+    </header>
+
+    <ErrorMessage v-if="errorMessage" :message="errorMessage" class="mt-4" />
+    <Button
+      v-if="errorMessage && !batch"
+      label="New Screening"
+      variant="subtle"
+      theme="gray"
+      class="mt-3 self-start"
+      @click="resetScreening"
+    />
+
+    <section v-if="!batch" class="mt-6 space-y-6">
+      <div class="grid gap-4 lg:grid-cols-2">
+        <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="text-lg-semibold text-ink-gray-8">Job Description</h2>
+              <p class="mt-1 text-p-sm text-ink-gray-5">{{ formatsLabel('jd') }}</p>
+            </div>
+            <Button :label="jdFile ? 'Replace' : 'Choose JD'" variant="subtle" theme="gray" @click="jdInput?.click()" />
+          </div>
+          <input ref="jdInput" data-testid="showcase-jd-input" class="sr-only" type="file" :accept="accepts('jd')" @change="setJdFile">
+          <div class="min-h-12 rounded border border-dashed border-outline-gray-2 bg-surface-gray-1 px-3 py-3">
+            <div v-if="jdFile" class="flex min-w-0 items-center justify-between gap-3">
+              <span class="truncate text-base-medium text-ink-gray-8">{{ jdFile.name }}</span>
+              <Button label="Remove" variant="ghost" theme="gray" @click="removeJd" />
+            </div>
+            <p v-else class="text-p-sm text-ink-gray-5">Select one JD file.</p>
+          </div>
+          <FormControl
+            v-if="designationOptions.length"
+            v-model="targetDesignation"
+            type="select"
+            label="Screening for"
+            :options="[{ label: 'Choose designation', value: '' }, ...designationOptions]"
+            required
+          />
+        </section>
+
+        <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="text-lg-semibold text-ink-gray-8">Resumes</h2>
+              <p class="mt-1 text-p-sm text-ink-gray-5">{{ formatsLabel('resume') }}</p>
+            </div>
+            <Button :label="resumeFiles.length ? 'Replace' : 'Choose Resumes'" variant="subtle" theme="gray" @click="resumeInput?.click()" />
+          </div>
+          <input ref="resumeInput" data-testid="showcase-resume-input" class="sr-only" type="file" :accept="accepts('resume')" multiple @change="setResumeFiles">
+          <div class="min-h-12 rounded border border-dashed border-outline-gray-2 bg-surface-gray-1 px-3 py-3">
+            <div v-if="resumeFiles.length" class="space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-base-medium text-ink-gray-8">
+                  {{ resumeCount }} resume{{ resumeCount === 1 ? '' : 's' }} selected
+                </span>
+                <Button label="Clear" variant="ghost" theme="gray" @click="clearResumes" />
+              </div>
+              <div class="space-y-1">
+                <p v-for="file in resumeFiles.slice(0, 4)" :key="`${file.name}-${file.size}`" class="truncate text-p-sm text-ink-gray-6">
+                  {{ file.name }}
+                </p>
+                <p v-if="resumeFiles.length > 4" class="text-p-sm text-ink-gray-5">+{{ resumeFiles.length - 4 }} more</p>
+              </div>
+            </div>
+            <p v-else class="text-p-sm text-ink-gray-5">Select one or more resume PDFs.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="flex justify-center">
+        <Button
+          label="Start Screening"
+          variant="solid"
+          theme="gray"
+          size="md"
+          :loading="loading"
+          :disabled="!canStart"
+          @click="startScreening"
+        />
+      </div>
+    </section>
+
+    <section v-else class="mt-6 space-y-7">
+      <section class="space-y-3 rounded border border-outline-gray-1 bg-surface-base p-5">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="text-lg-semibold text-ink-gray-8">
+              Screening {{ batch.accepted_count }} resume{{ batch.accepted_count === 1 ? '' : 's' }}
+            </h2>
+            <p class="mt-1 text-p-sm text-ink-gray-5">{{ progressText }}</p>
+            <p v-if="duplicateText" class="mt-1 text-p-sm text-ink-gray-5">{{ duplicateText }}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <Badge :label="stageLabel(batch.status)" variant="subtle" theme="gray" />
+            <Button
+              v-if="['COMPLETED', 'FAILED'].includes(batch.status)"
+              label="New Screening"
+              variant="subtle"
+              theme="gray"
+              @click="resetScreening"
+            />
+          </div>
+        </div>
+        <Progress :value="progressValue" size="md" label="" hint />
+      </section>
+
+      <p class="text-p-sm text-ink-gray-5">Screening classification only. Final decisions remain with HR.</p>
+
+      <section class="grid gap-4 lg:grid-cols-3">
+        <section v-for="column in columns" :key="column.key" class="min-w-0 space-y-3 rounded border border-outline-gray-1 bg-surface-base p-4">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-base-medium text-ink-gray-8">{{ column.title }}</h2>
+            <Badge :label="String(itemsFor(column.key).length)" variant="subtle" :theme="column.theme" />
+          </div>
+          <div v-if="itemsFor(column.key).length" class="space-y-3">
+            <article v-for="item in itemsFor(column.key)" :key="item.id" class="space-y-2 rounded border border-outline-gray-1 bg-surface-gray-1 p-3">
+              <div class="flex min-w-0 items-start justify-between gap-2">
+                <h3 class="min-w-0 truncate text-base-medium text-ink-gray-8">{{ candidateTitle(item) }}</h3>
+                <Badge :label="column.title" variant="subtle" :theme="column.theme" />
+              </div>
+              <p class="line-clamp-3 text-p-sm leading-5 text-ink-gray-6">{{ candidateReason(item) }}</p>
+            </article>
+          </div>
+          <p v-else class="rounded border border-dashed border-outline-gray-2 px-3 py-8 text-center text-p-sm text-ink-gray-5">
+            No resumes in this group.
+          </p>
+        </section>
+      </section>
+    </section>
+  </div>
+</template>

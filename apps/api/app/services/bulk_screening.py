@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from app.core.config import get_settings
-from app.core.errors import DomainError, InvalidTransition, NotFound
+from app.core.errors import DomainError, InvalidTransition, NotFound, StructuredDomainError
 from app.core.security import require_any_role
 from app.db.base import utcnow
 from app.models import (
@@ -54,6 +54,7 @@ from app.services.structured_jd_contract import (
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 BULK_STAFF_ROLES = {Role.HR_RECRUITER, Role.DEPARTMENT_REVIEWER, Role.HIRING_ADMIN}
 SUPPORTED_BULK_JD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
@@ -113,17 +114,30 @@ class MockBulkScreeningProvider:
             evidence_status = "supported"
             missing = []
 
+        failed_requirement_ids: list[str] = []
+        failed_requirement_details: list[dict[str, str]] = []
         evaluations = []
         for criterion in criteria:
             name = criterion.get("name") or criterion.get("criterion_id", "Criterion")
             weight = float(criterion.get("weight") or 0)
+            requirement_ids = [str(value) for value in criterion.get("requirement_ids", [])]
+            if eligibility == "FAIL":
+                failure_id = requirement_ids[0] if requirement_ids else str(criterion.get("criterion_id", "criterion"))
+                failed_requirement_ids.append(failure_id)
+                failed_requirement_details.append(
+                    {
+                        "requirement_id": failure_id,
+                        "status": "not_met",
+                        "description": f"Mandatory evidence missing for {name}.",
+                    }
+                )
             evaluations.append(
                 {
                     "criterion_id": criterion.get("criterion_id", "criterion"),
                     "criterion_name": name,
                     "category": criterion.get("category", "skill"),
                     "weight": weight,
-                    "requirement_ids": criterion.get("requirement_ids", []),
+                    "requirement_ids": requirement_ids,
                     "match_fraction": fraction,
                     "weighted_score": round(weight * fraction, 2),
                     "status": status,
@@ -172,10 +186,10 @@ class MockBulkScreeningProvider:
                 "eligibility": {
                     "status": eligibility,
                     "checked_requirements": [],
-                    "failed_requirements": [],
+                    "failed_requirements": failed_requirement_ids,
                     "ambiguous_requirements": missing if eligibility == "REVIEW" else [],
                     "requirement_statuses": {},
-                    "requirement_details": [],
+                    "requirement_details": failed_requirement_details,
                     "explanation": "Synthetic eligibility for bulk workflow testing.",
                 },
                 "criterion_evaluations": evaluations,
@@ -498,6 +512,27 @@ def create_ad_hoc_jd_batch(db: Session, actor: User, *, jd_file: UploadFile) -> 
     return batch
 
 
+def create_simple_ad_hoc_screening_batch(
+    db: Session,
+    actor: User,
+    *,
+    jd_file: UploadFile,
+    files: list[UploadFile] | None = None,
+    zip_file: UploadFile | None = None,
+    target_designation: str | None = None,
+) -> BulkScreeningBatch:
+    batch = create_ad_hoc_jd_batch(db, actor, jd_file=jd_file)
+    try:
+        confirm_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
+    except StructuredDomainError as error:
+        if error.code != "INVALID_SCREENING_CRITERIA":
+            raise
+        reconcile_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
+        confirm_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
+    add_resumes_to_batch(db, actor, batch.id, files=files, zip_file=zip_file)
+    return start_batch(db, actor, batch.id)
+
+
 def confirm_ad_hoc_criteria(
     db: Session,
     actor: User,
@@ -567,12 +602,13 @@ def reconcile_ad_hoc_criteria(
         criteria.append(next_criterion)
     if not reconciled:
         raise InvalidTransition("No deterministic ad-hoc criteria reconciliation is available")
+    batch.criteria_snapshot = criteria
+    flag_modified(batch, "criteria_snapshot")
     _validate_structured_jd_confirmation(
         batch.ad_hoc_structured_jd,
         criteria,
         target_designation=batch.target_designation,
     )
-    batch.criteria_snapshot = criteria
     record_audit(
         db,
         actor_id=actor.id,
@@ -1423,7 +1459,7 @@ def _structured_jd_for_batch(batch: BulkScreeningBatch) -> dict:
     if batch.source_type == BulkScreeningSourceType.EXISTING_JOB and batch.rubric_version:
         payload = batch.rubric_version.structured_jd_payload
     else:
-        payload = batch.ad_hoc_structured_jd or {}
+        payload = {**(batch.ad_hoc_structured_jd or {}), "scoring_rubric": batch.criteria_snapshot or []}
     return validate_structured_jd_for_engine(payload, target_designation=batch.target_designation).canonical_payload
 
 

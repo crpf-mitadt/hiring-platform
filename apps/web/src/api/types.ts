@@ -381,3 +381,11 @@ export type BulkScreeningBatch = {
   jd_document: DocumentRead | null
   job_title: string | null
 }
+
+export type BulkSupportedFormats = {
+  jd: string[]
+  resumes: string[]
+  archives: string[]
+  unsupported: string[]
+  notes: string[]
+}
