@@ -20,7 +20,7 @@ type ApiClientEnv = {
 }
 
 export function resolveApiBaseUrl(env: ApiClientEnv = import.meta.env) {
-  if (env.MODE === 'test') return ''
+  if (env.MODE === 'test' || env.MODE === 'development') return ''
   return env.VITE_API_BASE_URL ?? ''
 }
 

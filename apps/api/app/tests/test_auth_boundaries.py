@@ -29,15 +29,32 @@ def test_public_candidate_registration_is_not_exposed(client):
 
 
 def test_staff_login_and_logout(client, users):
+    settings = get_settings()
     login = client.post(
         "/api/auth/login",
         json={"email": users["recruiter"]["email"], "password": "recruiter-password"},
     )
     assert login.status_code == 200
+    set_cookie = login.headers["set-cookie"]
+    assert f"{settings.session_cookie_name}=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Path=/" in set_cookie
+    assert "SameSite=lax" in set_cookie
     assert client.get("/api/auth/me").json()["email"] == users["recruiter"]["email"]
 
     logout = client.post("/api/auth/logout")
     assert logout.status_code == 200
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_invalid_staff_login_does_not_create_authenticated_session(client, users):
+    login = client.post(
+        "/api/auth/login",
+        json={"email": users["recruiter"]["email"], "password": "wrong-password"},
+    )
+
+    assert login.status_code == 401
+    assert "set-cookie" not in login.headers
     assert client.get("/api/auth/me").status_code == 401
 
 

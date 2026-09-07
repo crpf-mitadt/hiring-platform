@@ -135,10 +135,13 @@ npm install
 
 ```bash
 cd apps/web
-VITE_API_BASE_URL=http://localhost:8010 VITE_API_PROXY_TARGET=http://localhost:8010 npm run dev
+VITE_API_PROXY_TARGET=http://localhost:8010 npm run dev
 ```
 
 The Vite dev server proxy target comes from `VITE_API_PROXY_TARGET` and defaults to `http://localhost:8010`.
+During local development, frontend API calls intentionally stay on relative `/api` URLs so the browser stores and
+sends the HttpOnly `hiring_session` cookie on the same origin as the Vite app. Use `VITE_API_BASE_URL` for production
+builds that intentionally call a separate API origin with matching cookie/CORS configuration.
 
 ## Frontend Validation
 

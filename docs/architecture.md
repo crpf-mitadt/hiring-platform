@@ -51,7 +51,9 @@ It uses:
 - Frappe UI runtime plugin/components.
 - Frappe UI Vite plugin only for current icon virtual module support.
 - Tailwind with the current exported `frappe-ui/tailwind` preset.
-- Configurable API base/proxy target through `VITE_API_BASE_URL` and `VITE_API_PROXY_TARGET`.
+- Same-origin local API requests through the Vite `/api` proxy, with `VITE_API_PROXY_TARGET` selecting the backend.
+  `VITE_API_BASE_URL` is reserved for production builds that intentionally target a separate API origin with matching
+  cookie/CORS configuration.
 
 The app is a product UI, not a landing page: sidebar navigation, dense lists, draft editing,
 review actions, and candidate-safe views are the first screen/workflow surfaces.
