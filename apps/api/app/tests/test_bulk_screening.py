@@ -4,7 +4,7 @@ import threading
 import zipfile
 from pathlib import Path
 
-from app.models import BulkScreeningItem, BulkScreeningWorkItem, Job, JobRubricVersion
+from app.models import BulkScreeningBatch, BulkScreeningItem, BulkScreeningWorkItem, Job, JobRubricVersion
 from app.services.bulk_screening import (
     BulkVariantEvaluation,
     _strongest_variant_result,
@@ -17,8 +17,39 @@ from app.worker import run_pending_screening_jobs
 from sqlalchemy import select
 
 
-def _resume_file(filename: str, content: bytes | None = None):
-    return ("files", (filename, content or b"%PDF-1.4 meets all required evidence", "application/pdf"))
+def _pdf_bytes(text: bytes | str = b"meets all required evidence", *, pages: int = 1) -> bytes:
+    body = text if isinstance(text, bytes) else text.encode()
+    page_objects = []
+    kids = []
+    object_id = 3
+    for index in range(pages):
+        page_id = object_id
+        content_id = object_id + 1
+        object_id += 2
+        kids.append(f"{page_id} 0 R")
+        stream = body + f" page {index + 1}".encode()
+        page_objects.append(
+            (
+                f"{page_id} 0 obj << /Type /Page /Parent 2 0 R /Resources << >> "
+                f"/MediaBox [0 0 612 792] /Contents {content_id} 0 R >> endobj\n"
+            ).encode()
+        )
+        page_objects.append(
+            b"%d 0 obj << /Length %d >> stream\n%s\nendstream endobj\n" % (content_id, len(stream), stream)
+        )
+    return b"".join(
+        [
+            b"%PDF-1.4\n",
+            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+            f"2 0 obj << /Type /Pages /Kids [{' '.join(kids)}] /Count {pages} >> endobj\n".encode(),
+            *page_objects,
+            b"%%EOF\n",
+        ]
+    )
+
+
+def _resume_file(filename: str, content: bytes | str | None = None, *, pages: int = 1):
+    return ("files", (filename, _pdf_bytes(content or b"meets all required evidence", pages=pages), "application/pdf"))
 
 
 def _zip_file(entries: dict[str, bytes], filename: str = "resumes.zip"):
@@ -315,6 +346,122 @@ def test_simple_bulk_screening_handles_multiple_resumes_and_dedupe(client, db_se
     assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 2
 
 
+def test_simple_bulk_screening_accepts_one_page_pdf_resume(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("one-page.pdf", pages=1)],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted_count"] == 1
+    assert response.json()["items"][0]["status"] == "PENDING"
+    assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 1
+
+
+def test_simple_bulk_screening_accepts_four_page_pdf_resume(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("four-page.pdf", pages=4)],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted_count"] == 1
+    assert response.json()["items"][0]["status"] == "PENDING"
+    assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 1
+
+
+def test_simple_bulk_screening_rejects_five_page_resume_before_queueing(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("five-page.pdf", pages=5)],
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "NO_SCREENABLE_RESUMES"
+    assert response.json()["issues"][0]["type"] == "RESUME_TOO_LONG"
+    assert response.json()["issues"][0]["original_filename"] == "five-page.pdf"
+    assert "5 pages" in response.json()["issues"][0]["description"]
+    assert db_session.scalar(select(BulkScreeningWorkItem)) is None
+    assert db_session.scalar(select(BulkScreeningBatch)) is None
+
+
+def test_simple_bulk_screening_mixed_valid_and_oversized_resumes_queues_only_valid(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [
+            _resume_file("valid-a.pdf", pages=2),
+            _resume_file("oversized.pdf", pages=6),
+            _resume_file("valid-b.pdf", pages=4),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "QUEUED"
+    assert body["accepted_count"] == 2
+    assert body["unsupported_count"] == 1
+    by_file = {item["original_filename"]: item for item in body["items"]}
+    assert by_file["oversized.pdf"]["status"] == "UNSUPPORTED"
+    assert by_file["oversized.pdf"]["failure_code"] == "RESUME_TOO_LONG"
+    assert by_file["valid-a.pdf"]["status"] == "PENDING"
+    assert by_file["valid-b.pdf"]["status"] == "PENDING"
+    work_items = list(db_session.scalars(select(BulkScreeningWorkItem)))
+    assert len(work_items) == 2
+    assert {item.item.original_filename for item in work_items} == {"valid-a.pdf", "valid-b.pdf"}
+
+    seen_by_provider: list[str] = []
+
+    class RecordingProvider:
+        name = "recording-provider"
+        engine_version = "test"
+
+        def evaluate(self, item, progress=None):
+            seen_by_provider.append(item.original_filename)
+            if progress:
+                progress("COMPARING_WITH_JD")
+            return ProviderExecutionResult(
+                provider=self.name,
+                provider_engine_version=self.engine_version,
+                payload={
+                    "artifact_schema_version": "candidate-evaluation-v1",
+                    "eligibility": {"status": "PASS"},
+                    "criterion_evaluations": [],
+                    "evidence_completeness": 1,
+                    "experience_summary": {"confirmed_months": 24},
+                },
+            )
+
+    while process_next_bulk_screening_jobs(db_session, provider=RecordingProvider()):
+        db_session.commit()
+
+    assert seen_by_provider == ["valid-a.pdf", "valid-b.pdf"]
+    assert "oversized.pdf" not in seen_by_provider
+
+
+def test_simple_bulk_screening_invalid_pdf_is_reported_safely_before_queueing(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [("files", ("invalid.pdf", b"not a pdf", "application/pdf"))],
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "NO_SCREENABLE_RESUMES"
+    assert response.json()["issues"][0]["type"] == "INVALID_PDF"
+    assert response.json()["issues"][0]["original_filename"] == "invalid.pdf"
+    assert db_session.scalar(select(BulkScreeningWorkItem)) is None
+    assert db_session.scalar(select(BulkScreeningBatch)) is None
+
+
 def test_simple_bulk_screening_reconciles_deterministic_mandatory_criteria(client, monkeypatch, users):
     monkeypatch.setattr(
         "app.services.bulk_screening._generate_ad_hoc_structured_jd",
@@ -382,6 +529,23 @@ def test_simple_bulk_screening_accepts_multi_rank_jd_without_designation_selecto
     assert response.json()["items"][0]["processing_stage"] == "QUEUED"
 
 
+def test_simple_bulk_screening_ignores_stale_multi_rank_grounding_warning(client, monkeypatch, users):
+    payload = _multi_designation_structured_jd()
+    payload["extraction_warnings"] = ["mandatory requirement was not linked to any scoring criterion"]
+    monkeypatch.setattr("app.services.bulk_screening._generate_ad_hoc_structured_jd", lambda _document: payload)
+
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"assistant associate professor",
+        [_resume_file("candidate.pdf")],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["target_designation"] is None
+    assert response.json()["status"] == "QUEUED"
+
+
 def test_simple_bulk_screening_invalid_jd_preflight_prevents_resume_queueing(client, db_session, monkeypatch, users):
     monkeypatch.setattr(
         "app.services.bulk_screening._generate_ad_hoc_structured_jd",
@@ -405,6 +569,7 @@ def test_simple_bulk_screening_invalid_jd_preflight_prevents_resume_queueing(cli
     )
 
     assert response.status_code == 409
+    assert response.json()["code"] == "INVALID_SCREENING_CRITERIA"
     assert db_session.scalar(select(BulkScreeningWorkItem)) is None
 
 

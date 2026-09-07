@@ -667,6 +667,28 @@ describe('Hiring Platform product shell', () => {
     await input.trigger('change')
   }
 
+  function pdfFile(name: string, pages: number, text = 'meets all required evidence') {
+    const kids = Array.from({ length: pages }, (_, index) => `${3 + index * 2} 0 R`).join(' ')
+    const pageObjects = Array.from({ length: pages }, (_, index) => {
+      const pageId = 3 + index * 2
+      const contentId = pageId + 1
+      return [
+        `${pageId} 0 obj << /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 612 792] /Contents ${contentId} 0 R >> endobj`,
+        `${contentId} 0 obj << /Length ${text.length} >> stream\n${text}\nendstream endobj`
+      ].join('\n')
+    }).join('\n')
+    const source = [
+      '%PDF-1.4',
+      '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+      `2 0 obj << /Type /Pages /Kids [${kids}] /Count ${pages} >> endobj`,
+      pageObjects,
+      '%%EOF'
+    ].join('\n')
+    const file = new File([source], name, { type: 'application/pdf' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(source), configurable: true })
+    return file
+  }
+
   it('allows protected dashboard requests only after authenticated bootstrap succeeds', async () => {
     apiMock.me.mockResolvedValue({
       id: 'admin-1',
@@ -1006,6 +1028,7 @@ describe('Hiring Platform product shell', () => {
       new File(['missing'], 'missing.pdf'),
       new File(['provider failure'], 'provider-failure.pdf')
     ])
+    await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
     await flushPromises()
 
@@ -1031,12 +1054,14 @@ describe('Hiring Platform product shell', () => {
 
   it('does not reintroduce a designation selector in the simplified showcase flow', async () => {
     apiMock.simpleBulkScreening.mockImplementation(() =>
-      Promise.reject({
-        code: 'TARGET_DESIGNATION_REQUIRED',
-        issues: [
-        { type: 'TARGET_DESIGNATION_REQUIRED', options: ['Assistant Professor', 'Professor'] }
-        ]
-      })
+      Promise.reject(
+        new ApiError(
+          'Choose a target designation before confirming screening criteria.',
+          'TARGET_DESIGNATION_REQUIRED',
+          [{ type: 'TARGET_DESIGNATION_REQUIRED', options: ['Assistant Professor', 'Professor'] }],
+          409
+        )
+      )
     )
     globalThis.history.pushState({}, '', '/screening')
 
@@ -1047,11 +1072,12 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Screening for')
     await chooseFiles(wrapper, 'showcase-jd-input', [new File(['multi designation JD'], 'multi-rank-jd.pdf')])
     await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'candidate.pdf')])
+    await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
     await flushPromises()
 
     expect(apiMock.simpleBulkScreening).toHaveBeenCalledWith(expect.any(File), expect.any(Array), null)
-    expect(wrapper.text()).toContain("We couldn't prepare this job description for screening. Please try another JD.")
+    expect(wrapper.text()).toContain('Choose a target designation before confirming screening criteria.')
     expect(wrapper.text()).not.toContain('Choose a target designation before screening this JD.')
     expect(wrapper.text()).not.toContain('Screening for')
     expect(wrapper.text()).not.toContain('scoring_rubric')
@@ -1067,6 +1093,7 @@ describe('Hiring Platform product shell', () => {
 
     await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
     await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'meets.pdf')])
+    await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === 'New Screening')?.trigger('click')
@@ -1331,6 +1358,167 @@ describe('Hiring Platform product shell', () => {
     expect(wrapper.text()).not.toContain('Create Batch')
     expect(wrapper.text()).not.toContain('Extract Criteria')
     expect(wrapper.text()).not.toContain('Screen resume batches against approved criteria')
+  })
+
+  it('submits one simple bulk screening request and disables start while in flight', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    let resolveStart = () => bulkBatch
+    const startPromise = new Promise<typeof bulkBatch>((resolve) => {
+      resolveStart = () => {
+        resolve({ ...bulkBatch, source_type: 'ADHOC_JD' })
+        return bulkBatch
+      }
+    })
+    apiMock.simpleBulkScreening.mockReturnValue(startPromise)
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'candidate.pdf')])
+    await flushPromises()
+    const startButton = wrapper.findAll('button').find((button) => button.text() === 'Start Screening')
+    await startButton?.trigger('click')
+    await startButton?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.simpleBulkScreening).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.attributes('disabled'))
+      .toBeDefined()
+
+    resolveStart()
+    await flushPromises()
+
+    expect(globalThis.location.search).toBe('?batch=bulk-1')
+  })
+
+  it('shows a JD preparation conflict once without reverting to designation selection', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    apiMock.simpleBulkScreening.mockRejectedValue(
+      new ApiError('The extracted screening criteria need review before screening can start.', 'INVALID_SCREENING_CRITERIA', [], 409)
+    )
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'candidate.pdf')])
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text.match(/extracted screening criteria need review/g)).toHaveLength(1)
+    expect(text).not.toContain('Screening for')
+    expect(text).not.toContain('Choose a target designation')
+  })
+
+  it('preserves selected files and current error across staff shell viewport remounts', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    apiMock.simpleBulkScreening.mockRejectedValue(
+      new ApiError('The extracted screening criteria need review before screening can start.', 'INVALID_SCREENING_CRITERIA', [], 409)
+    )
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'faculty-jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [new File(['meets'], 'candidate.pdf')])
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+
+    Object.defineProperty(globalThis, 'innerWidth', { value: 390, configurable: true })
+    globalThis.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    Object.defineProperty(globalThis, 'innerWidth', { value: 1440, configurable: true })
+    globalThis.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('faculty-jd.pdf')
+    expect(wrapper.text()).toContain('1 resume selected')
+    expect(wrapper.text()).toContain('candidate.pdf')
+    expect(wrapper.text()).toContain('The extracted screening criteria need review before screening can start.')
+  })
+
+  it('preserves active bulk batch across staff shell viewport remounts', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    Object.defineProperty(globalThis, 'innerWidth', { value: 390, configurable: true })
+    globalThis.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    Object.defineProperty(globalThis, 'innerWidth', { value: 1440, configurable: true })
+    globalThis.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    expect(globalThis.location.search).toBe('?batch=bulk-1')
+    expect(wrapper.text()).toContain('Does Not Meet')
+    expect(wrapper.text()).toContain('Needs Review')
+    expect(wrapper.text()).toContain('Meets Criteria')
+  })
+
+  it('keeps valid resumes usable when an oversized resume is rejected in the browser', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'recruiter-1',
+      email: 'recruiter@example.org',
+      full_name: 'Recruiter User',
+      roles: ['hr_recruiter']
+    })
+    globalThis.history.pushState({}, '', '/app/bulk-screening')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await chooseFiles(wrapper, 'showcase-jd-input', [new File(['faculty JD'], 'jd.pdf')])
+    await chooseFiles(wrapper, 'showcase-resume-input', [
+      pdfFile('valid-four-page.pdf', 4),
+      pdfFile('too-long.pdf', 5)
+    ])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('1 resume selected')
+    expect(wrapper.text()).toContain('valid-four-page.pdf')
+    expect(wrapper.text()).toContain('too-long.pdf')
+    expect(wrapper.text()).toContain('Resume has 5 pages. Maximum allowed is 4.')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Start Screening')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.simpleBulkScreening).toHaveBeenCalledTimes(1)
+    expect(apiMock.simpleBulkScreening.mock.calls[0][1]).toHaveLength(1)
+    expect(apiMock.simpleBulkScreening.mock.calls[0][1][0].name).toBe('valid-four-page.pdf')
   })
 
   it('restores an in-progress dashboard bulk screening from recent history', async () => {

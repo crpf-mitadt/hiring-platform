@@ -1,8 +1,31 @@
+<script lang="ts">
+import { ref as moduleRef } from 'vue'
+import type { ApiErrorIssue as ModuleApiErrorIssue } from '../api/client'
+import type {
+  BulkScreeningBatch as ModuleBulkScreeningBatch,
+  BulkSupportedFormats as ModuleBulkSupportedFormats
+} from '../api/types'
+
+const bulkWorkspaceState = {
+  jdFile: moduleRef<File | null>(null),
+  resumeFiles: moduleRef<File[]>([]),
+  batch: moduleRef<ModuleBulkScreeningBatch | null>(null),
+  recentBatches: moduleRef<ModuleBulkScreeningBatch[]>([]),
+  formats: moduleRef<ModuleBulkSupportedFormats | null>(null),
+  pollHandle: moduleRef<ReturnType<typeof globalThis.setInterval> | null>(null),
+  loading: moduleRef(false),
+  errorMessage: moduleRef(''),
+  sessionExpired: moduleRef(false),
+  expandedReasonIds: moduleRef<string[]>([]),
+  resumeValidationIssues: moduleRef<ModuleApiErrorIssue[]>([])
+}
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Badge, Button, ErrorMessage, Progress } from 'frappe-ui'
-import { ApiError, api } from '../api/client'
-import type { BulkScreeningBatch, BulkScreeningItem, BulkSupportedFormats } from '../api/types'
+import { ApiError, api, type ApiErrorIssue } from '../api/client'
+import type { BulkScreeningItem } from '../api/types'
 
 const props = withDefaults(defineProps<{ compact?: boolean; requiresAuth?: boolean }>(), {
   compact: false,
@@ -12,17 +35,19 @@ const emit = defineEmits<{ authExpired: [] }>()
 
 const jdInput = ref<HTMLInputElement | null>(null)
 const resumeInput = ref<HTMLInputElement | null>(null)
-const jdFile = ref<File | null>(null)
-const resumeFiles = ref<File[]>([])
-const batch = ref<BulkScreeningBatch | null>(null)
-const recentBatches = ref<BulkScreeningBatch[]>([])
-const formats = ref<BulkSupportedFormats | null>(null)
-const pollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
-const loading = ref(false)
-const errorMessage = ref('')
-const sessionExpired = ref(false)
-const expandedReasonIds = ref<string[]>([])
+const jdFile = bulkWorkspaceState.jdFile
+const resumeFiles = bulkWorkspaceState.resumeFiles
+const batch = bulkWorkspaceState.batch
+const recentBatches = bulkWorkspaceState.recentBatches
+const formats = bulkWorkspaceState.formats
+const pollHandle = bulkWorkspaceState.pollHandle
+const loading = bulkWorkspaceState.loading
+const errorMessage = bulkWorkspaceState.errorMessage
+const sessionExpired = bulkWorkspaceState.sessionExpired
+const expandedReasonIds = bulkWorkspaceState.expandedReasonIds
+const resumeValidationIssues = bulkWorkspaceState.resumeValidationIssues
 const newScreeningStorageKey = 'hiring.bulk-screening.new'
+const workspaceStorageKey = 'hiring.bulk-screening.workspace'
 
 const resumeCount = computed(() => resumeFiles.value.length)
 const canStart = computed(() => !!jdFile.value && resumeFiles.value.length > 0 && !loading.value)
@@ -56,6 +81,7 @@ const columns: {
 ]
 
 onMounted(async () => {
+  ensureWorkspaceSession()
   await loadFormats()
   await loadHistory()
   if (sessionExpired.value) return
@@ -113,12 +139,18 @@ function restoreActiveBatchFromHistory() {
 function setJdFile(event: Event) {
   const input = event.target as HTMLInputElement
   jdFile.value = input.files?.[0] ?? null
+  errorMessage.value = ''
   batch.value = null
 }
 
-function setResumeFiles(event: Event) {
+async function setResumeFiles(event: Event) {
   const input = event.target as HTMLInputElement
-  resumeFiles.value = Array.from(input.files ?? [])
+  errorMessage.value = ''
+  resumeValidationIssues.value = []
+  const selected = Array.from(input.files ?? [])
+  const validation = await validateResumeSelection(selected)
+  resumeFiles.value = validation.valid
+  resumeValidationIssues.value = validation.invalid
   batch.value = null
 }
 
@@ -129,14 +161,17 @@ function removeJd() {
 
 function clearResumes() {
   resumeFiles.value = []
+  resumeValidationIssues.value = []
   if (resumeInput.value) resumeInput.value.value = ''
 }
 
 async function startScreening() {
+  if (loading.value) return
   if (sessionExpired.value) return
   if (!jdFile.value || !resumeFiles.value.length) return
   loading.value = true
   errorMessage.value = ''
+  resumeValidationIssues.value = []
   try {
     batch.value = await api.simpleBulkScreening(jdFile.value, resumeFiles.value, null)
     globalThis.sessionStorage?.removeItem(newScreeningStorageKey)
@@ -144,9 +179,7 @@ async function startScreening() {
     await loadHistory()
     managePolling()
   } catch (error) {
-    if (!handleRequestError(error)) {
-      errorMessage.value = "We couldn't prepare this job description for screening. Please try another JD."
-    }
+    handleStartError(error)
   } finally {
     loading.value = false
   }
@@ -158,6 +191,7 @@ function resetScreening() {
   resumeFiles.value = []
   expandedReasonIds.value = []
   errorMessage.value = ''
+  resumeValidationIssues.value = []
   globalThis.sessionStorage?.setItem(newScreeningStorageKey, '1')
   if (globalThis.location.search) globalThis.history.replaceState({}, '', globalThis.location.pathname)
   if (jdInput.value) jdInput.value.value = ''
@@ -220,6 +254,42 @@ function handleRequestError(error: unknown) {
   return false
 }
 
+function handleStartError(error: unknown) {
+  if (handleRequestError(error)) return
+  if (error instanceof ApiError) {
+    resumeValidationIssues.value = resumeIssuesFromApiError(error)
+    if (resumeValidationIssues.value.length) {
+      errorMessage.value = error.message || 'One or more resumes cannot be screened.'
+      return
+    }
+    errorMessage.value = jdErrorMessage(error)
+    return
+  }
+  errorMessage.value = "We couldn't start this screening. Please check the files and try again."
+}
+
+function jdErrorMessage(error: ApiError) {
+  const byCode: Record<string, string> = {
+    INVALID_JD: 'This job description could not be read as a screenable JD.',
+    UNSUPPORTED_JD: 'This job description format is not supported for screening.',
+    JD_STRUCTURE_FAILED: 'The job description could not be structured for screening.',
+    NO_SCREENABLE_REQUIREMENTS: 'The job description does not contain screenable requirements.',
+    INVALID_SCREENING_CRITERIA: 'The extracted screening criteria need review before screening can start.'
+  }
+  return (error.code && byCode[error.code]) || error.message || "We couldn't prepare this job description for screening. Please try another JD."
+}
+
+function resumeIssuesFromApiError(error: ApiError) {
+  return error.issues.filter((issue) => isResumeValidationIssue(issue))
+}
+
+function isResumeValidationIssue(issue: ApiErrorIssue) {
+  return Boolean(
+    (issue.original_filename || issue.filename) &&
+      ['RESUME_TOO_LONG', 'INVALID_PDF', 'UNSUPPORTED_FILE_TYPE', 'UNSUPPORTED_RESUME'].includes(issue.type ?? '')
+  )
+}
+
 function itemsFor(classification: BulkScreeningItem['classification']) {
   const items = batch.value?.items ?? []
   if (classification === 'NEEDS_REVIEW') {
@@ -270,6 +340,68 @@ function setBatchQuery(batchId: string) {
 function accepts(kind: 'jd' | 'resume') {
   const available = kind === 'jd' ? formats.value?.jd : formats.value?.resumes
   return (available?.length ? available : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf']).join(',')
+}
+
+async function validateResumeSelection(files: File[]) {
+  const valid: File[] = []
+  const invalid: ApiErrorIssue[] = []
+  for (const file of files) {
+    const pageCount = await clientPdfPageCount(file)
+    if (pageCount !== null && pageCount > 4) {
+      invalid.push({
+        type: 'RESUME_TOO_LONG',
+        original_filename: file.name,
+        page_count: pageCount,
+        max_pages: 4,
+        description: `Resume has ${pageCount} pages. Maximum allowed is 4.`
+      })
+      continue
+    }
+    valid.push(file)
+  }
+  return { valid, invalid }
+}
+
+async function clientPdfPageCount(file: File) {
+  if (file.type && file.type !== 'application/pdf') return null
+  if (!file.name.toLowerCase().endsWith('.pdf')) return null
+  const text = typeof file.text === 'function'
+    ? await file.text().catch(() => '')
+    : await new globalThis.Response(file).text().catch(() => '')
+  if (!text.startsWith('%PDF-')) return null
+  const matches = text.match(/\/Type\s*\/Page\b/g)
+  return matches?.length ?? null
+}
+
+function resumeIssueFilename(issue: ApiErrorIssue) {
+  return issue.original_filename || issue.filename || 'Resume'
+}
+
+function resumeIssueDescription(issue: ApiErrorIssue) {
+  return issue.description || 'This resume cannot be screened.'
+}
+
+function ensureWorkspaceSession() {
+  if (globalThis.sessionStorage?.getItem(workspaceStorageKey) === '1') return
+  resetDurableWorkspaceState()
+  globalThis.sessionStorage?.setItem(workspaceStorageKey, '1')
+}
+
+function resetDurableWorkspaceState() {
+  jdFile.value = null
+  resumeFiles.value = []
+  batch.value = null
+  recentBatches.value = []
+  formats.value = null
+  loading.value = false
+  errorMessage.value = ''
+  sessionExpired.value = false
+  expandedReasonIds.value = []
+  resumeValidationIssues.value = []
+  if (pollHandle.value !== null) {
+    globalThis.clearInterval(pollHandle.value)
+    pollHandle.value = null
+  }
 }
 
 function formatsLabel(kind: 'jd' | 'resume') {
@@ -370,6 +502,12 @@ function formatDate(value: string | null | undefined) {
               </div>
             </div>
             <p v-else class="text-p-sm text-ink-gray-5">Select one or more resume PDFs.</p>
+          </div>
+          <div v-if="resumeValidationIssues.length" class="space-y-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-3">
+            <div v-for="issue in resumeValidationIssues" :key="`${resumeIssueFilename(issue)}-${issue.type}`">
+              <p class="truncate text-base-medium text-ink-gray-8">{{ resumeIssueFilename(issue) }}</p>
+              <p class="mt-1 text-p-sm text-ink-red-6">{{ resumeIssueDescription(issue) }}</p>
+            </div>
           </div>
         </section>
         </div>

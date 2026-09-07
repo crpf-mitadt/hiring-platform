@@ -34,6 +34,10 @@ type RequestOptions = {
 export type ApiErrorIssue = {
   type?: string
   description?: string
+  original_filename?: string
+  filename?: string
+  page_count?: number
+  max_pages?: number
   requirement_id?: string
   criterion_id?: string
   field?: string

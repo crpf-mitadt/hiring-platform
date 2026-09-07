@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import re
 import time
 import zipfile
 from collections.abc import Callable
@@ -63,6 +64,7 @@ SUPPORTED_BULK_RESUME_EXTENSIONS = {".pdf"}
 INTEGRATION_BULK_RESUME_EXTENSIONS = {".json"}
 SUPPORTED_BULK_ARCHIVE_EXTENSIONS = {".zip"}
 UNSUPPORTED_AUDITED_EXTENSIONS = {".doc", ".rtf", ".tif", ".tiff", ".heic", ".jpg", ".jpeg", ".png", ".docx", ".txt"}
+MAX_BULK_RESUME_PAGES = 4
 
 logger = logging.getLogger(__name__)
 
@@ -613,9 +615,18 @@ def create_simple_ad_hoc_screening_batch(
     except StructuredDomainError as error:
         if error.code != "INVALID_SCREENING_CRITERIA":
             raise
-        reconcile_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
+        try:
+            reconcile_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
+        except InvalidTransition as reconcile_error:
+            raise error from reconcile_error
         confirm_ad_hoc_criteria(db, actor, batch.id, target_designation=target_designation)
     add_resumes_to_batch(db, actor, batch.id, files=files, zip_file=zip_file)
+    if batch.accepted_count == 0:
+        raise StructuredDomainError(
+            "No uploaded resumes can be screened.",
+            code="NO_SCREENABLE_RESUMES",
+            issues=_resume_validation_issues(batch),
+        )
     return start_batch(db, actor, batch.id)
 
 
@@ -1216,6 +1227,36 @@ def _ingest_resume_candidate(
         db.add(item)
         db.flush()
         return
+    if suffix == ".pdf":
+        page_count = _pdf_page_count(candidate.data)
+        if page_count is None:
+            item = BulkScreeningItem(
+                batch=batch,
+                original_filename=filename,
+                content_sha256=digest,
+                status=BulkScreeningItemStatus.UNSUPPORTED,
+                classification=BulkScreeningClassification.NEEDS_REVIEW,
+                concise_reason="Resume PDF is corrupt or unreadable; this file was not screened.",
+                failure_code="INVALID_PDF",
+                failure_message="Resume must be a valid PDF with readable page structure.",
+            )
+            db.add(item)
+            db.flush()
+            return
+        if page_count > MAX_BULK_RESUME_PAGES:
+            item = BulkScreeningItem(
+                batch=batch,
+                original_filename=filename,
+                content_sha256=digest,
+                status=BulkScreeningItemStatus.UNSUPPORTED,
+                classification=BulkScreeningClassification.NEEDS_REVIEW,
+                concise_reason=f"Resume has {page_count} pages. Maximum allowed is {MAX_BULK_RESUME_PAGES}.",
+                failure_code="RESUME_TOO_LONG",
+                failure_message=f"Resume has {page_count} pages. Maximum allowed is {MAX_BULK_RESUME_PAGES}.",
+            )
+            db.add(item)
+            db.flush()
+            return
     duplicate = existing_by_sha.get(digest)
     if duplicate is not None:
         item = BulkScreeningItem(
@@ -1515,6 +1556,13 @@ def _validate_structured_jd_confirmation(
     *,
     target_designation: str | None = None,
 ) -> None:
+    variant_payload = {**structured_jd, "scoring_rubric": criteria}
+    _validate_structured_jd_variants_for_engine(
+        variant_payload,
+        target_designation=target_designation,
+    )
+    if not target_designation and len(designation_options_for_structured_jd(variant_payload)) > 1:
+        return
     warnings = [
         str(warning).lower()
         for key in ("warnings", "extraction_warnings")
@@ -1527,11 +1575,11 @@ def _validate_structured_jd_confirmation(
     )
     for warning in warnings:
         if any(phrase in warning for phrase in blocking_phrases):
-            raise InvalidTransition("Ad-hoc JD criteria contain unresolved grounding warnings")
-    _validate_structured_jd_variants_for_engine(
-        {**structured_jd, "scoring_rubric": criteria},
-        target_designation=target_designation,
-    )
+            raise StructuredDomainError(
+                "Ad-hoc JD criteria contain unresolved grounding warnings.",
+                code="NO_SCREENABLE_REQUIREMENTS",
+                issues=[{"type": "NO_SCREENABLE_REQUIREMENTS", "description": warning}],
+            )
 
 
 def _refresh_batch_counts(batch: BulkScreeningBatch) -> None:
@@ -1621,6 +1669,28 @@ def _validate_structured_jd_variants_for_engine(
     target_designation: str | None = None,
 ) -> None:
     _structured_jd_variants_for_payload(payload, target_designation=target_designation)
+
+
+def _pdf_page_count(data: bytes) -> int | None:
+    if not data.lstrip().startswith(b"%PDF-"):
+        return None
+    count = len(re.findall(rb"/Type\s*/Page\b", data))
+    return count if count > 0 else None
+
+
+def _resume_validation_issues(batch: BulkScreeningBatch) -> list[dict[str, Any]]:
+    issues = []
+    for item in batch.items:
+        if item.status != BulkScreeningItemStatus.UNSUPPORTED:
+            continue
+        issues.append(
+            {
+                "type": item.failure_code or "UNSUPPORTED_RESUME",
+                "original_filename": item.original_filename,
+                "description": item.failure_message or item.concise_reason or "Resume cannot be screened.",
+            }
+        )
+    return issues or [{"type": "NO_SCREENABLE_RESUMES", "description": "No uploaded resumes can be screened."}]
 
 
 def _strongest_variant_result(results: list[BulkVariantEvaluation]) -> BulkVariantEvaluation:
