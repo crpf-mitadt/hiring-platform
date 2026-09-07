@@ -4,7 +4,11 @@ import { Badge, Button, ErrorMessage, FormControl, Progress } from 'frappe-ui'
 import { ApiError, api } from '../api/client'
 import type { BulkScreeningBatch, BulkScreeningItem, BulkSupportedFormats } from '../api/types'
 
-const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+const props = withDefaults(defineProps<{ compact?: boolean; requiresAuth?: boolean }>(), {
+  compact: false,
+  requiresAuth: false
+})
+const emit = defineEmits<{ authExpired: [] }>()
 
 const jdInput = ref<HTMLInputElement | null>(null)
 const resumeInput = ref<HTMLInputElement | null>(null)
@@ -17,6 +21,7 @@ const formats = ref<BulkSupportedFormats | null>(null)
 const pollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
 const loading = ref(false)
 const errorMessage = ref('')
+const sessionExpired = ref(false)
 
 const resumeCount = computed(() => resumeFiles.value.length)
 const canStart = computed(
@@ -52,6 +57,7 @@ const columns: {
 
 onMounted(async () => {
   await loadFormats()
+  if (sessionExpired.value) return
   await loadBatchFromQuery()
   managePolling()
 })
@@ -61,19 +67,25 @@ onBeforeUnmount(() => {
 })
 
 async function loadFormats() {
-  formats.value = await api.bulkSupportedFormats().catch(() => null)
+  formats.value = await api.bulkSupportedFormats().catch((error) => {
+    handleRequestError(error)
+    return null
+  })
 }
 
 async function loadBatchFromQuery() {
+  if (sessionExpired.value) return
   const batchId = new URLSearchParams(globalThis.location.search).get('batch')
   if (!batchId) return
   loading.value = true
   errorMessage.value = ''
   try {
     batch.value = await api.bulkBatch(batchId)
-  } catch {
+  } catch (error) {
     batch.value = null
-    errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+    if (!handleRequestError(error)) {
+      errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+    }
   } finally {
     loading.value = false
   }
@@ -106,6 +118,7 @@ function clearResumes() {
 }
 
 async function startScreening() {
+  if (sessionExpired.value) return
   if (!jdFile.value || !resumeFiles.value.length) return
   loading.value = true
   errorMessage.value = ''
@@ -119,7 +132,7 @@ async function startScreening() {
       const options = apiError.issues?.find((issue) => issue.options?.length)?.options ?? []
       designationOptions.value = options.map((value) => ({ label: value, value }))
       errorMessage.value = 'Choose a target designation before screening this JD.'
-    } else {
+    } else if (!handleRequestError(error)) {
       errorMessage.value = "We couldn't prepare this job description for screening. Please try another JD."
     }
   } finally {
@@ -141,9 +154,14 @@ function resetScreening() {
 }
 
 async function refreshBatch() {
+  if (sessionExpired.value) return
   if (!batch.value) return
-  batch.value = await api.bulkBatch(batch.value.id)
-  managePolling()
+  try {
+    batch.value = await api.bulkBatch(batch.value.id)
+    managePolling()
+  } catch (error) {
+    handleRequestError(error)
+  }
 }
 
 function managePolling() {
@@ -156,6 +174,19 @@ function managePolling() {
       void refreshBatch()
     }, 3000)
   }
+}
+
+function handleRequestError(error: unknown) {
+  if (props.requiresAuth && error instanceof ApiError && error.status === 401) {
+    sessionExpired.value = true
+    if (pollHandle.value !== null) {
+      globalThis.clearInterval(pollHandle.value)
+      pollHandle.value = null
+    }
+    emit('authExpired')
+    return true
+  }
+  return false
 }
 
 function itemsFor(classification: BulkScreeningItem['classification']) {

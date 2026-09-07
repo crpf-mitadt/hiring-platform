@@ -19,7 +19,6 @@ import {
   PageHeader,
   Progress,
   Sidebar,
-  SidebarHeader,
   SidebarItem,
   SidebarLabel,
   TabButtons,
@@ -71,12 +70,14 @@ type RouteName =
   | 'staffFinalDecisions'
 
 type EvidenceCriterion = BulkScreeningItem['criterion_results'][number] | ScreeningCriterionResult
+type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
 
 const route = ref<RouteName>('publicHome')
 const routeJobId = ref<string | null>(null)
 const routeApplicationId = ref<string | null>(null)
 const routeBulkBatchId = ref<string | null>(null)
 const currentUser = ref<User | null>(null)
+const authStatus = ref<AuthStatus>('checking')
 const publicJobs = ref<Job[]>([])
 const staffJobs = ref<Job[]>([])
 const applications = ref<Application[]>([])
@@ -205,7 +206,9 @@ const applyForm = reactive({
 })
 const assessmentResponses = reactive<Record<string, string[]>>({})
 
-const isStaff = computed(() => currentUser.value?.roles.some((role) => role !== 'candidate') ?? false)
+const isStaff = computed(
+  () => authStatus.value === 'authenticated' && (currentUser.value?.roles.some((role) => role !== 'candidate') ?? false)
+)
 const staffPageTitle = computed(() => {
   const titles: Partial<Record<RouteName, string>> = {
     staffDashboard: 'Recruitment dashboard',
@@ -443,6 +446,70 @@ const applicationStages: ApplicationStage[] = [
   'NOT_PROGRESSED_AFTER_SCREENING'
 ]
 
+function isStaffRoute(value: RouteName) {
+  return value.startsWith('staff') && value !== 'staffLogin'
+}
+
+function clearStaffState() {
+  dashboard.value = {}
+  staffJobs.value = []
+  applications.value = []
+  selectedJob.value = null
+  selectedApplication.value = null
+  rubricVersions.value = []
+  dossier.value = null
+  bulkBatches.value = []
+  selectedBulkBatch.value = null
+  selectedBulkEvidenceItem.value = null
+  routeBulkBatchId.value = null
+  bulkWizardOpen.value = false
+  if (bulkPollHandle.value !== null) {
+    globalThis.clearInterval(bulkPollHandle.value)
+    bulkPollHandle.value = null
+  }
+}
+
+function invalidateStaffSession(messageText = 'Authentication required') {
+  currentUser.value = null
+  authStatus.value = 'unauthenticated'
+  clearStaffState()
+  if (isStaffRoute(route.value)) {
+    route.value = 'staffLogin'
+    if (globalThis.location.pathname !== '/staff/login') {
+      globalThis.history.replaceState({}, '', '/staff/login')
+    }
+  }
+  errorMessage.value = messageText
+}
+
+function isUnauthorizedError(error: unknown) {
+  return error instanceof ApiError && error.status === 401
+}
+
+async function verifySession() {
+  authStatus.value = 'checking'
+  try {
+    currentUser.value = await api.me()
+    authStatus.value = 'authenticated'
+    return true
+  } catch (error) {
+    currentUser.value = null
+    authStatus.value = 'unauthenticated'
+    clearStaffState()
+    if (isUnauthorizedError(error)) return false
+    errorMessage.value = error instanceof Error ? error.message : 'Unable to verify your session.'
+    return false
+  }
+}
+
+async function loadCurrentRoute() {
+  if (isStaffRoute(route.value) && authStatus.value !== 'authenticated') {
+    invalidateStaffSession()
+    return
+  }
+  await loadForRoute()
+}
+
 function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId?: string; batchId?: string } = {}) {
   route.value = nextRoute
   routeJobId.value = options.jobId ?? null
@@ -450,7 +517,7 @@ function navigate(nextRoute: RouteName, options: { jobId?: string; applicationId
   routeBulkBatchId.value = options.batchId ?? null
   const path = pathForRoute(nextRoute, options)
   if (globalThis.location.pathname !== path) globalThis.history.pushState({}, '', path)
-  void loadForRoute()
+  void loadCurrentRoute()
 }
 
 function pathForRoute(nextRoute: RouteName, options: { jobId?: string; applicationId?: string; batchId?: string } = {}) {
@@ -531,7 +598,11 @@ function routeFromLocation(): RouteName {
   return 'publicHome'
 }
 
-async function run<T>(task: () => Promise<T>, success?: string): Promise<T | null> {
+async function run<T>(
+  task: () => Promise<T>,
+  success?: string,
+  options: { requiresAuth?: boolean; notifyOnAuthFailure?: boolean } = {}
+): Promise<T | null> {
   loading.value = true
   message.value = ''
   errorMessage.value = ''
@@ -543,6 +614,11 @@ async function run<T>(task: () => Promise<T>, success?: string): Promise<T | nul
     }
     return result
   } catch (error) {
+    if (options.requiresAuth && isUnauthorizedError(error)) {
+      invalidateStaffSession()
+      if (options.notifyOnAuthFailure) toast.error(errorMessage.value)
+      return null
+    }
     if (error instanceof ApiError && error.issues.length) {
       bulkPreflightIssues.value = error.issues
     }
@@ -558,18 +634,13 @@ async function bootstrap() {
   route.value = routeFromLocation()
   globalThis.addEventListener('popstate', () => {
     route.value = routeFromLocation()
-    void loadForRoute()
+    void loadCurrentRoute()
   })
-  if (route.value === 'showcaseScreening') {
-    currentUser.value = await api.me().catch(() => null)
-    await loadForRoute()
-    return
+  await verifySession()
+  if (isStaffRoute(route.value) && !isStaff.value) {
+    invalidateStaffSession()
   }
-  await run(async () => {
-    currentUser.value = await api.me()
-  })
-  if (!currentUser.value && route.value.toString().startsWith('staff')) route.value = 'staffLogin'
-  await loadForRoute()
+  await loadCurrentRoute()
 }
 
 async function loadForRoute() {
@@ -587,8 +658,17 @@ async function loadForRoute() {
   }
   if (route.value === 'applicationContinue') await exchangeContinuationToken()
   if (route.value === 'applicationStatus') await loadApplicationContinuation()
-  if (isStaff.value && route.value.startsWith('staff')) {
-    await Promise.all([loadDashboard(), loadStaffJobs(), loadApplications()])
+  if (isStaffRoute(route.value)) {
+    if (!isStaff.value) {
+      invalidateStaffSession()
+      return
+    }
+    await loadDashboard()
+    if (!isStaff.value) return
+    await loadStaffJobs()
+    if (!isStaff.value) return
+    await loadApplications()
+    if (!isStaff.value) return
   }
   if (route.value === 'staffJobWorkspace' && routeJobId.value) await openStaffJob(routeJobId.value)
   if (route.value === 'staffApplicationWorkspace' && routeApplicationId.value) {
@@ -614,7 +694,7 @@ async function loadPublicJob(jobId: string) {
 }
 
 async function loadDashboard() {
-  const data = await run(() => api.dashboard())
+  const data = await run(() => api.dashboard(), undefined, { requiresAuth: true })
   if (data) dashboard.value = data
 }
 
@@ -622,7 +702,7 @@ async function loadStaffJobs() {
   const params = new URLSearchParams()
   if (staffJobFilter.search) params.set('search', staffJobFilter.search)
   if (staffJobFilter.status) params.set('status', staffJobFilter.status)
-  const jobs = await run(() => api.listJobs(params))
+  const jobs = await run(() => api.listJobs(params), undefined, { requiresAuth: true })
   if (jobs) staffJobs.value = jobs
 }
 
@@ -630,13 +710,14 @@ async function loadApplications() {
   const params = new URLSearchParams()
   if (applicationFilter.job_id) params.set('job_id', applicationFilter.job_id)
   if (applicationFilter.stage) params.set('stage', applicationFilter.stage)
-  const rows = await run(() => api.listApplications(params))
+  const rows = await run(() => api.listApplications(params), undefined, { requiresAuth: true })
   if (rows) applications.value = rows
 }
 
 async function loadBulkScreening() {
-  const batches = await run(() => api.listBulkBatches())
+  const batches = await run(() => api.listBulkBatches(), undefined, { requiresAuth: true })
   if (batches) bulkBatches.value = batches
+  if (!isStaff.value) return
   if (route.value === 'staffBulkScreening' && routeBulkBatchId.value) {
     await openBulkBatch(routeBulkBatchId.value, false)
   } else if (route.value === 'staffBulkScreeningNew') {
@@ -761,18 +842,26 @@ function manageShowcasePolling() {
 }
 
 async function login() {
-  const user = await run(() => api.login(loginForm), 'Signed in.')
+  const user = await run(() => api.login(loginForm))
   if (!user) return
-  currentUser.value = user
+  const verified = await verifySession()
+  if (!verified || !isStaff.value) {
+    invalidateStaffSession()
+    return
+  }
+  message.value = 'Signed in.'
+  toast.success('Signed in.')
   navigate('staffDashboard')
 }
 
 async function logout() {
   await run(() => api.logout(), 'Signed out.')
   currentUser.value = null
+  authStatus.value = 'unauthenticated'
+  clearStaffState()
   selectedApplication.value = null
   dossier.value = null
-  navigate('publicHome')
+  navigate('staffLogin')
 }
 
 async function submitPublicApplication() {
@@ -874,7 +963,8 @@ async function createJob() {
         hiring_manager_id: sample.hiring_manager_id,
         department_reviewer_ids: sample.department_reviewer_ids
       }),
-    'Job draft created.'
+    'Job draft created.',
+    { requiresAuth: true }
   )
   if (job) {
     showJobEditor.value = false
@@ -884,13 +974,13 @@ async function createJob() {
 
 async function saveDraft() {
   if (!selectedJob.value) return
-  const job = await run(() => api.updateJob(selectedJob.value!.id, jobForm), 'Draft saved.')
+  const job = await run(() => api.updateJob(selectedJob.value!.id, jobForm), 'Draft saved.', { requiresAuth: true })
   if (job) selectedJob.value = job
 }
 
 async function publishJob() {
   if (!selectedJob.value) return
-  const job = await run(() => api.publishJob(selectedJob.value!.id), 'Job published.')
+  const job = await run(() => api.publishJob(selectedJob.value!.id), 'Job published.', { requiresAuth: true })
   if (job) selectedJob.value = job
 }
 
@@ -902,7 +992,7 @@ async function closeJob() {
     theme: 'red',
     confirmLabel: 'Close job',
     onConfirm: async ({ close }) => {
-      const job = await run(() => api.closeJob(selectedJob.value!.id), 'Job closed.')
+      const job = await run(() => api.closeJob(selectedJob.value!.id), 'Job closed.', { requiresAuth: true })
       if (job) selectedJob.value = job
       close()
     }
@@ -921,24 +1011,28 @@ async function openStaffJob(jobId: string) {
     description: selectedJob.value.description,
     jd_document_ref: selectedJob.value.jd_document_ref ?? ''
   })
-  const versions = await run(() => api.listRubricVersions(selectedJob.value!.id))
+  const versions = await run(() => api.listRubricVersions(selectedJob.value!.id), undefined, { requiresAuth: true })
   if (versions) rubricVersions.value = versions
 }
 
 async function generateRubric() {
   if (!selectedJob.value) return
-  const version = await run(() => api.generateRubricVersion(selectedJob.value!.id), 'Rubric proposal generated.')
+  const version = await run(() => api.generateRubricVersion(selectedJob.value!.id), 'Rubric proposal generated.', {
+    requiresAuth: true
+  })
   if (version) await openStaffJob(selectedJob.value.id)
 }
 
 async function approveRubric(version: RubricVersion) {
-  const approved = await run(() => api.approveRubricVersion(version.id), 'Rubric approved and frozen.')
+  const approved = await run(() => api.approveRubricVersion(version.id), 'Rubric approved and frozen.', {
+    requiresAuth: true
+  })
   if (approved && selectedJob.value) await openStaffJob(selectedJob.value.id)
 }
 
 async function openApplicationWorkspace(applicationId: string) {
   selectedApplication.value = applications.value.find((row) => row.id === applicationId) ?? null
-  const data = await run(() => api.screeningDossier(applicationId))
+  const data = await run(() => api.screeningDossier(applicationId), undefined, { requiresAuth: true })
   if (data) {
     dossier.value = data
     selectedApplication.value = data.application ?? selectedApplication.value
@@ -958,7 +1052,9 @@ async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress
     theme: action === 'do-not-progress' ? 'red' : undefined,
     confirmLabel: action === 'do-not-progress' ? 'Do not progress' : 'Record decision',
     onConfirm: async ({ close }) => {
-      const updated = await run(() => api.transition(selectedApplication.value!.id, action, remarks.value), 'Decision recorded.')
+      const updated = await run(() => api.transition(selectedApplication.value!.id, action, remarks.value), 'Decision recorded.', {
+        requiresAuth: true
+      })
       if (updated) {
         remarks.value = ''
         await openApplicationWorkspace(updated.id)
@@ -970,12 +1066,14 @@ async function screeningDecision(action: 'shortlist' | 'hold' | 'do-not-progress
 
 async function retryLatestScreening() {
   if (!latestScreening.value || latestScreening.value.run_status !== 'FAILED') return
-  const retry = await run(() => api.retryScreening(latestScreening.value!.id), 'Screening retry queued.')
+  const retry = await run(() => api.retryScreening(latestScreening.value!.id), 'Screening retry queued.', {
+    requiresAuth: true
+  })
   if (retry && selectedApplication.value) await openApplicationWorkspace(selectedApplication.value.id)
 }
 
 async function openBulkBatch(batchId: string, pushRoute = true) {
-  const batch = await run(() => api.bulkBatch(batchId))
+  const batch = await run(() => api.bulkBatch(batchId), undefined, { requiresAuth: true })
   if (!batch) return
   selectedBulkBatch.value = batch
   bulkWizardOpen.value = ['DRAFT', 'READY'].includes(batch.status)
@@ -1018,7 +1116,9 @@ async function uploadAdHocBulkJd() {
     errorMessage.value = 'Choose a JD file before continuing.'
     return
   }
-  const batch = await run(() => api.createAdHocBulkBatch(bulkJdFile.value!), 'JD extracted for criteria review.')
+  const batch = await run(() => api.createAdHocBulkBatch(bulkJdFile.value!), 'JD extracted for criteria review.', {
+    requiresAuth: true
+  })
   if (batch) {
     selectedBulkBatch.value = batch
     routeBulkBatchId.value = null
@@ -1043,7 +1143,8 @@ async function confirmAdHocBulkCriteria() {
   }
   const batch = await run(
     () => api.confirmBulkCriteria(selectedBulkBatch.value!.id, bulkTargetDesignation.value || null),
-    'Criteria confirmed.'
+    'Criteria confirmed.',
+    { requiresAuth: true }
   )
   if (batch) {
     selectedBulkBatch.value = batch
@@ -1057,7 +1158,8 @@ async function reconcileAdHocBulkCriteria() {
   if (!selectedBulkBatch.value) return
   const batch = await run(
     () => api.reconcileBulkCriteria(selectedBulkBatch.value!.id, bulkTargetDesignation.value || null),
-    'Criteria reconciliation applied.'
+    'Criteria reconciliation applied.',
+    { requiresAuth: true }
   )
   if (batch) {
     selectedBulkBatch.value = batch
@@ -1071,7 +1173,9 @@ async function createExistingBulkBatch() {
     errorMessage.value = 'Choose an approved job before continuing.'
     return
   }
-  const batch = await run(() => api.createExistingJobBulkBatch(bulkForm.job_id), 'Bulk screening draft created.')
+  const batch = await run(() => api.createExistingJobBulkBatch(bulkForm.job_id), 'Bulk screening draft created.', {
+    requiresAuth: true
+  })
   if (batch) {
     selectedBulkBatch.value = batch
     routeBulkBatchId.value = null
@@ -1091,7 +1195,8 @@ async function uploadBulkResumesForReview() {
   const files = [...bulkResumeFiles.value, ...bulkFolderFiles.value]
   const batch = await run(
     () => api.addBulkResumes(selectedBulkBatch.value!.id, files, bulkZipFile.value),
-    'Resume files uploaded and validated.'
+    'Resume files uploaded and validated.',
+    { requiresAuth: true }
   )
   if (batch) {
     selectedBulkBatch.value = batch
@@ -1109,7 +1214,9 @@ async function startBulkScreening() {
     errorMessage.value = 'Upload at least one validated unique resume before starting screening.'
     return
   }
-  const batch = await run(() => api.startBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening queued.')
+  const batch = await run(() => api.startBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening queued.', {
+    requiresAuth: true
+  })
   if (batch) {
     selectedBulkBatch.value = batch
     bulkWizardOpen.value = false
@@ -1126,7 +1233,9 @@ async function discardBulkDraft() {
     theme: 'red',
     confirmLabel: 'Discard screening',
     onConfirm: async ({ close }) => {
-      const ok = await run(() => api.discardBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening draft discarded.')
+      const ok = await run(() => api.discardBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening draft discarded.', {
+        requiresAuth: true
+      })
       if (ok) {
         selectedBulkBatch.value = null
         selectedBulkEvidenceItem.value = null
@@ -1150,7 +1259,8 @@ async function archiveBulkScreening() {
     onConfirm: async ({ close }) => {
       const archived = await run(
         () => api.archiveBulkBatch(selectedBulkBatch.value!.id),
-        'Bulk screening archived.'
+        'Bulk screening archived.',
+        { requiresAuth: true }
       )
       if (archived) {
         selectedBulkBatch.value = null
@@ -1166,7 +1276,9 @@ async function archiveBulkScreening() {
 
 async function resumeFailedBulkScreening() {
   if (!selectedBulkBatch.value || selectedBulkBatch.value.status !== 'FAILED') return
-  const batch = await run(() => api.resumeBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening resumed.')
+  const batch = await run(() => api.resumeBulkBatch(selectedBulkBatch.value!.id), 'Bulk screening resumed.', {
+    requiresAuth: true
+  })
   if (batch) {
     selectedBulkBatch.value = batch
     bulkPreflightIssues.value = []
@@ -1794,6 +1906,13 @@ onBeforeUnmount(() => {
       </template>
     </section>
 
+    <section
+      v-else-if="authStatus === 'checking' && route.startsWith('staff')"
+      class="flex h-full items-center justify-center"
+    >
+      <LoadingText :lines="3" />
+    </section>
+
     <section v-else-if="!route.startsWith('staff') || route === 'staffLogin'" class="h-full overflow-y-auto">
       <PageHeader>
         <Button variant="ghost" theme="gray" @click="navigate('publicHome')">
@@ -2093,7 +2212,13 @@ onBeforeUnmount(() => {
     <component :is="isCompactViewport ? MobileShell : DesktopShell" v-else-if="isStaff">
       <template v-if="!isCompactViewport" #sidebar>
         <Sidebar width="16rem" disable-collapse class="flex h-full flex-col border-r border-outline-gray-1">
-          <SidebarHeader title="Hiring Platform" subtitle="University recruitment" class="px-3 py-4" />
+          <div class="flex h-12 shrink-0 items-center gap-2 px-3">
+            <Avatar label="Hiring Platform" size="sm" />
+            <div class="min-w-0">
+              <div class="truncate text-base-medium text-ink-gray-8">Hiring Platform</div>
+              <div class="truncate text-sm text-ink-gray-6">University recruitment</div>
+            </div>
+          </div>
           <div class="flex-1 space-y-1 overflow-y-auto px-3 pb-4 pt-5">
             <SidebarLabel class="px-2 pb-3">Recruitment</SidebarLabel>
             <SidebarItem
@@ -2243,7 +2368,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="route === 'staffBulkScreening'" class="space-y-6">
-          <BulkScreeningShowcase compact />
+          <BulkScreeningShowcase compact requires-auth @auth-expired="invalidateStaffSession()" />
         </section>
 
         <section v-if="bulkLegacyVisible && route === 'staffBulkScreening' && !routeBulkBatchId" class="space-y-5">

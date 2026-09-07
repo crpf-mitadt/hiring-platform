@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
+import { ApiError } from './api/client'
 
 const apiMock = vi.hoisted(() => ({
   me: vi.fn(),
@@ -33,11 +34,13 @@ const apiMock = vi.hoisted(() => ({
 vi.mock('./api/client', () => ({
   ApiError: class ApiError extends Error {
     code?: string
+    status: number
     issues: unknown[]
 
-    constructor(message: string, code?: string, issues: unknown[] = []) {
+    constructor(message: string, code?: string, issues: unknown[] = [], status = 0) {
       super(message)
       this.code = code
+      this.status = status
       this.issues = issues
     }
   },
@@ -509,7 +512,7 @@ describe('Hiring Platform product shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     globalThis.history.pushState({}, '', '/')
-    apiMock.me.mockRejectedValue(new Error('Authentication required'))
+    apiMock.me.mockRejectedValue(new ApiError('Authentication required', undefined, [], 401))
     apiMock.publicJobs.mockResolvedValue([publishedJob])
     apiMock.publicJob.mockResolvedValue(publishedJob)
     apiMock.dashboard.mockResolvedValue({
@@ -630,6 +633,179 @@ describe('Hiring Platform product shell', () => {
     Object.defineProperty(input.element, 'files', { value: files, configurable: true })
     await input.trigger('change')
   }
+
+  it('allows protected dashboard requests only after authenticated bootstrap succeeds', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.org',
+      full_name: 'MIT-ADT Hiring Administrator',
+      roles: ['hiring_administrator']
+    })
+    globalThis.history.pushState({}, '', '/app')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.me).toHaveBeenCalledTimes(1)
+    expect(apiMock.dashboard).toHaveBeenCalledTimes(1)
+    expect(apiMock.listJobs).toHaveBeenCalledTimes(1)
+    expect(apiMock.listApplications).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.text()).toContain('Hiring Administrator')
+    expect(wrapper.text()).toContain('Sign out')
+  })
+
+  it('does not render stale staff shell or fetch protected data after auth bootstrap fails', async () => {
+    globalThis.history.pushState({}, '', '/app')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.me).toHaveBeenCalledTimes(1)
+    expect(apiMock.dashboard).not.toHaveBeenCalled()
+    expect(apiMock.listJobs).not.toHaveBeenCalled()
+    expect(apiMock.listApplications).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('University recruitment staff sign in')
+    expect(wrapper.text()).toContain('Authentication required')
+    expect(wrapper.text()).not.toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.text()).not.toContain('Hiring Admin')
+    expect(wrapper.text()).not.toContain('Sign out')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('settles auth bootstrap 401 without protected request or auth-check loops', async () => {
+    globalThis.history.pushState({}, '', '/app/jobs')
+
+    const App = (await import('./App.vue')).default
+    mount(App)
+    await flushPromises()
+    await flushPromises()
+
+    expect(apiMock.me).toHaveBeenCalledTimes(1)
+    expect(apiMock.dashboard).not.toHaveBeenCalled()
+    expect(apiMock.listJobs).not.toHaveBeenCalled()
+    expect(apiMock.listApplications).not.toHaveBeenCalled()
+  })
+
+  it('clears authenticated staff UI when a later protected request expires the session', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.org',
+      full_name: 'MIT-ADT Hiring Administrator',
+      roles: ['hiring_administrator']
+    })
+    apiMock.dashboard.mockResolvedValueOnce({
+      open_jobs: 1,
+      applications_received: 1,
+      screening_reviews_pending: 1,
+      shortlisted_for_assessment: 0
+    })
+    apiMock.listJobs.mockRejectedValueOnce(new ApiError('Authentication required', undefined, [], 401))
+    globalThis.history.pushState({}, '', '/app')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.dashboard).toHaveBeenCalledTimes(1)
+    expect(apiMock.listJobs).toHaveBeenCalledTimes(1)
+    expect(apiMock.listApplications).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('University recruitment staff sign in')
+    expect(wrapper.text()).toContain('Authentication required')
+    expect(wrapper.text()).not.toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.text()).not.toContain('Sign out')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('restores authenticated shell after successful login verifies the session', async () => {
+    apiMock.me
+      .mockRejectedValueOnce(new ApiError('Authentication required', undefined, [], 401))
+      .mockResolvedValueOnce({
+        id: 'admin-1',
+        email: 'admin@example.org',
+        full_name: 'MIT-ADT Hiring Administrator',
+        roles: ['hiring_administrator']
+      })
+    apiMock.login.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.org',
+      full_name: 'MIT-ADT Hiring Administrator',
+      roles: ['hiring_administrator']
+    })
+    globalThis.history.pushState({}, '', '/staff/login')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.login).toHaveBeenCalledTimes(1)
+    expect(apiMock.me).toHaveBeenCalledTimes(2)
+    expect(apiMock.dashboard).toHaveBeenCalledTimes(1)
+    expect(apiMock.listJobs).toHaveBeenCalledTimes(1)
+    expect(apiMock.listApplications).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.text()).toContain('Sign out')
+  })
+
+  it('sign out clears staff identity and returns to login', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.org',
+      full_name: 'MIT-ADT Hiring Administrator',
+      roles: ['hiring_administrator']
+    })
+    globalThis.history.pushState({}, '', '/app')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Sign out')?.trigger('click')
+    await flushPromises()
+
+    expect(apiMock.logout).toHaveBeenCalled()
+    expect(globalThis.location.pathname).toBe('/staff/login')
+    expect(wrapper.text()).toContain('University recruitment staff sign in')
+    expect(wrapper.text()).not.toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.text()).not.toContain('Sign out')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('clears staff UI if dashboard bulk screening requests expire the session', async () => {
+    apiMock.me.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.org',
+      full_name: 'MIT-ADT Hiring Administrator',
+      roles: ['hiring_administrator']
+    })
+    apiMock.bulkSupportedFormats.mockRejectedValueOnce(new ApiError('Authentication required', undefined, [], 401))
+    globalThis.history.pushState({}, '', '/app/bulk-screening?batch=bulk-1')
+
+    const App = (await import('./App.vue')).default
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(apiMock.dashboard).toHaveBeenCalledTimes(1)
+    expect(apiMock.listJobs).not.toHaveBeenCalled()
+    expect(apiMock.listApplications).not.toHaveBeenCalled()
+    expect(apiMock.bulkSupportedFormats).toHaveBeenCalledTimes(1)
+    expect(apiMock.bulkBatch).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('University recruitment staff sign in')
+    expect(wrapper.text()).toContain('Authentication required')
+    expect(wrapper.text()).not.toContain('MIT-ADT Hiring Administrator')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  })
+
+  it('does not render Frappe SidebarHeader, which creates a router-backed dropdown in this app', () => {
+    const source = readFileSync('src/App.vue', 'utf8')
+
+    expect(source).not.toContain('SidebarHeader')
+  })
 
   it('renders a public careers portal by default', async () => {
     const App = (await import('./App.vue')).default

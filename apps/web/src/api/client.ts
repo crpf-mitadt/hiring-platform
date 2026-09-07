@@ -42,12 +42,14 @@ export type ApiErrorIssue = {
 
 export class ApiError extends Error {
   code?: string
+  status: number
   issues: ApiErrorIssue[]
 
-  constructor(message: string, code?: string, issues: ApiErrorIssue[] = []) {
+  constructor(message: string, code?: string, issues: ApiErrorIssue[] = [], status = 0) {
     super(message)
     this.name = 'ApiError'
     this.code = code
+    this.status = status
     this.issues = issues
   }
 }
@@ -63,7 +65,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [])
+    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [], response.status)
   }
   return response.json()
 }
@@ -76,7 +78,7 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [])
+    throw new ApiError(readableError(payload.detail, response.statusText), payload.code, payload.issues ?? [], response.status)
   }
   return response.json()
 }
