@@ -69,6 +69,7 @@ class BulkScreeningBatch(Base, TimestampMixin):
     unsupported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_code: Mapped[str | None] = mapped_column(String(120))
     failure_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -104,6 +105,9 @@ class BulkScreeningItem(Base, TimestampMixin):
         default=BulkScreeningItemStatus.PENDING,
         index=True,
     )
+    processing_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     classification: Mapped[BulkScreeningClassification | None] = mapped_column(
         Enum(BulkScreeningClassification, name="bulk_screening_classification"), nullable=True, index=True
     )
@@ -191,6 +195,9 @@ class BulkScreeningWorkItem(Base, TimestampMixin):
         default=BulkScreeningItemStatus.PENDING,
         index=True,
     )
+    processing_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

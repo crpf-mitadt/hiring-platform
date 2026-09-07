@@ -61,6 +61,9 @@ class BulkScreeningItemRead(ApiModel):
     content_sha256: str | None
     duplicate_of_item_id: str | None
     status: BulkScreeningItemStatus
+    processing_stage: str | None
+    progress_percent: int
+    stage_updated_at: datetime | None
     classification: BulkScreeningClassification | None
     concise_reason: str | None
     candidate_name: str | None
@@ -106,6 +109,7 @@ class BulkScreeningBatchRead(ApiModel):
     unsupported_count: int
     completed_count: int
     failed_count: int
+    progress_percent: int
     failure_code: str | None
     failure_message: str | None
     started_at: datetime | None
@@ -133,6 +137,7 @@ class BulkScreeningBatchSummaryRead(ApiModel):
     unsupported_count: int
     completed_count: int
     failed_count: int
+    progress_percent: int
     failure_code: str | None
     failure_message: str | None
     created_at: datetime

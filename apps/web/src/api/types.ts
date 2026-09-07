@@ -308,6 +308,9 @@ export type BulkScreeningItem = {
   content_sha256: string | null
   duplicate_of_item_id: string | null
   status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DUPLICATE' | 'UNSUPPORTED'
+  processing_stage: string | null
+  progress_percent: number
+  stage_updated_at: string | null
   classification: BulkScreeningClassification | null
   concise_reason: string | null
   candidate_name: string | null
@@ -369,6 +372,7 @@ export type BulkScreeningBatch = {
   unsupported_count: number
   completed_count: number
   failed_count: number
+  progress_percent: number
   failure_code: string | null
   failure_message: string | null
   started_at: string | null

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Badge, Button, ErrorMessage, FormControl, Progress } from 'frappe-ui'
+import { Badge, Button, ErrorMessage, Progress } from 'frappe-ui'
 import { ApiError, api } from '../api/client'
 import type { BulkScreeningBatch, BulkScreeningItem, BulkSupportedFormats } from '../api/types'
 
@@ -15,25 +15,20 @@ const resumeInput = ref<HTMLInputElement | null>(null)
 const jdFile = ref<File | null>(null)
 const resumeFiles = ref<File[]>([])
 const batch = ref<BulkScreeningBatch | null>(null)
-const targetDesignation = ref('')
-const designationOptions = ref<{ label: string; value: string }[]>([])
+const recentBatches = ref<BulkScreeningBatch[]>([])
 const formats = ref<BulkSupportedFormats | null>(null)
 const pollHandle = ref<ReturnType<typeof globalThis.setInterval> | null>(null)
 const loading = ref(false)
 const errorMessage = ref('')
 const sessionExpired = ref(false)
+const expandedReasonIds = ref<string[]>([])
+const newScreeningStorageKey = 'hiring.bulk-screening.new'
 
 const resumeCount = computed(() => resumeFiles.value.length)
-const canStart = computed(
-  () =>
-    !!jdFile.value &&
-    resumeFiles.value.length > 0 &&
-    !loading.value &&
-    (!designationOptions.value.length || !!targetDesignation.value)
-)
+const canStart = computed(() => !!jdFile.value && resumeFiles.value.length > 0 && !loading.value)
 const progressValue = computed(() => {
   if (!batch.value?.accepted_count) return 0
-  return Math.round(((batch.value.completed_count + batch.value.failed_count) / batch.value.accepted_count) * 100)
+  return batch.value.progress_percent ?? Math.round(((batch.value.completed_count + batch.value.failed_count) / batch.value.accepted_count) * 100)
 })
 const progressText = computed(() => {
   if (!batch.value) return 'No screening started'
@@ -41,10 +36,15 @@ const progressText = computed(() => {
   const remaining = Math.max(batch.value.accepted_count - completed, 0)
   return `${completed} completed · ${remaining} remaining`
 })
+const activeStageText = computed(() => {
+  const running = batch.value?.items.find((item) => item.status === 'RUNNING')
+  return stageLabel(running?.processing_stage ?? batch.value?.status)
+})
 const duplicateText = computed(() => {
   const duplicates = batch.value?.duplicate_count ?? 0
   return duplicates ? `${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped` : ''
 })
+const activeOrRecentBatches = computed(() => recentBatches.value.slice(0, 8))
 const columns: {
   key: NonNullable<BulkScreeningItem['classification']>
   title: string
@@ -57,8 +57,10 @@ const columns: {
 
 onMounted(async () => {
   await loadFormats()
+  await loadHistory()
   if (sessionExpired.value) return
   await loadBatchFromQuery()
+  if (!batch.value) restoreActiveBatchFromHistory()
   managePolling()
 })
 
@@ -91,11 +93,26 @@ async function loadBatchFromQuery() {
   }
 }
 
+async function loadHistory() {
+  if (!props.requiresAuth || sessionExpired.value) return
+  const batches = await api.listBulkBatches().catch((error) => {
+    handleRequestError(error)
+    return []
+  })
+  recentBatches.value = batches
+}
+
+function restoreActiveBatchFromHistory() {
+  if (!props.requiresAuth) return
+  if (globalThis.sessionStorage?.getItem(newScreeningStorageKey) === '1') return
+  const active = recentBatches.value.find((entry) => ['QUEUED', 'RUNNING'].includes(entry.status))
+  if (!active) return
+  void openBatch(active.id)
+}
+
 function setJdFile(event: Event) {
   const input = event.target as HTMLInputElement
   jdFile.value = input.files?.[0] ?? null
-  designationOptions.value = []
-  targetDesignation.value = ''
   batch.value = null
 }
 
@@ -107,8 +124,6 @@ function setResumeFiles(event: Event) {
 
 function removeJd() {
   jdFile.value = null
-  designationOptions.value = []
-  targetDesignation.value = ''
   if (jdInput.value) jdInput.value.value = ''
 }
 
@@ -123,16 +138,13 @@ async function startScreening() {
   loading.value = true
   errorMessage.value = ''
   try {
-    batch.value = await api.simpleBulkScreening(jdFile.value, resumeFiles.value, targetDesignation.value || null)
-    designationOptions.value = []
+    batch.value = await api.simpleBulkScreening(jdFile.value, resumeFiles.value, null)
+    globalThis.sessionStorage?.removeItem(newScreeningStorageKey)
+    setBatchQuery(batch.value.id)
+    await loadHistory()
     managePolling()
   } catch (error) {
-    const apiError = error as Pick<ApiError, 'code' | 'issues'>
-    if (apiError.code === 'TARGET_DESIGNATION_REQUIRED') {
-      const options = apiError.issues?.find((issue) => issue.options?.length)?.options ?? []
-      designationOptions.value = options.map((value) => ({ label: value, value }))
-      errorMessage.value = 'Choose a target designation before screening this JD.'
-    } else if (!handleRequestError(error)) {
+    if (!handleRequestError(error)) {
       errorMessage.value = "We couldn't prepare this job description for screening. Please try another JD."
     }
   } finally {
@@ -144,13 +156,31 @@ function resetScreening() {
   batch.value = null
   jdFile.value = null
   resumeFiles.value = []
-  targetDesignation.value = ''
-  designationOptions.value = []
+  expandedReasonIds.value = []
   errorMessage.value = ''
+  globalThis.sessionStorage?.setItem(newScreeningStorageKey, '1')
   if (globalThis.location.search) globalThis.history.replaceState({}, '', globalThis.location.pathname)
   if (jdInput.value) jdInput.value.value = ''
   if (resumeInput.value) resumeInput.value.value = ''
   managePolling()
+}
+
+async function openBatch(batchId: string) {
+  if (sessionExpired.value) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    batch.value = await api.bulkBatch(batchId)
+    globalThis.sessionStorage?.removeItem(newScreeningStorageKey)
+    setBatchQuery(batch.value.id)
+    managePolling()
+  } catch (error) {
+    if (!handleRequestError(error)) {
+      errorMessage.value = 'We could not open that screening batch. Start a new screening or check the link.'
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function refreshBatch() {
@@ -172,6 +202,7 @@ function managePolling() {
   if (batch.value && ['QUEUED', 'RUNNING'].includes(batch.value.status)) {
     pollHandle.value = globalThis.setInterval(() => {
       void refreshBatch()
+      void loadHistory()
     }, 3000)
   }
 }
@@ -216,6 +247,26 @@ function candidateReason(item: BulkScreeningItem) {
   return item.concise_reason?.trim() || 'Evidence is incomplete or ambiguous and requires HR review.'
 }
 
+function reasonIsLong(item: BulkScreeningItem) {
+  return candidateReason(item).length > 170
+}
+
+function reasonExpanded(item: BulkScreeningItem) {
+  return expandedReasonIds.value.includes(item.id)
+}
+
+function toggleReason(item: BulkScreeningItem) {
+  expandedReasonIds.value = reasonExpanded(item)
+    ? expandedReasonIds.value.filter((id) => id !== item.id)
+    : [...expandedReasonIds.value, item.id]
+}
+
+function setBatchQuery(batchId: string) {
+  const params = new URLSearchParams(globalThis.location.search)
+  params.set('batch', batchId)
+  globalThis.history.replaceState({}, '', `${globalThis.location.pathname}?${params.toString()}`)
+}
+
 function accepts(kind: 'jd' | 'resume') {
   const available = kind === 'jd' ? formats.value?.jd : formats.value?.resumes
   return (available?.length ? available : kind === 'jd' ? ['.pdf', '.docx', '.txt', '.md'] : ['.pdf']).join(',')
@@ -230,11 +281,28 @@ function formatsLabel(kind: 'jd' | 'resume') {
 
 function stageLabel(value: string | null | undefined) {
   if (!value) return 'Not started'
+  const labels: Record<string, string> = {
+    QUEUED: 'Queued',
+    READING_RESUME: 'Reading resume',
+    STRUCTURING_PROFILE: 'Preparing candidate profile',
+    COMPARING_WITH_JD: 'Comparing with job requirements',
+    COMPLETED: 'Completed',
+    RUNNING: 'Running',
+    FAILED: 'Failed',
+    READY: 'Ready',
+    DRAFT: 'Draft'
+  }
+  if (labels[value]) return labels[value]
   return value
     .toLowerCase()
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return 'Not set'
+  return new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 </script>
 
@@ -257,7 +325,8 @@ function stageLabel(value: string | null | undefined) {
     />
 
     <section v-if="!batch" class="mt-6 space-y-6">
-      <div class="grid gap-4 lg:grid-cols-2">
+      <div class="grid gap-4" :class="props.requiresAuth && activeOrRecentBatches.length ? 'lg:grid-cols-[minmax(0,1fr)_18rem]' : ''">
+        <div class="grid gap-4 lg:grid-cols-2">
         <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
           <div class="flex items-start justify-between gap-3">
             <div>
@@ -274,14 +343,6 @@ function stageLabel(value: string | null | undefined) {
             </div>
             <p v-else class="text-p-sm text-ink-gray-5">Select one JD file.</p>
           </div>
-          <FormControl
-            v-if="designationOptions.length"
-            v-model="targetDesignation"
-            type="select"
-            label="Screening for"
-            :options="[{ label: 'Choose designation', value: '' }, ...designationOptions]"
-            required
-          />
         </section>
 
         <section class="space-y-4 rounded border border-outline-gray-1 bg-surface-base p-5">
@@ -311,6 +372,28 @@ function stageLabel(value: string | null | undefined) {
             <p v-else class="text-p-sm text-ink-gray-5">Select one or more resume PDFs.</p>
           </div>
         </section>
+        </div>
+
+        <section v-if="props.requiresAuth && activeOrRecentBatches.length" class="space-y-3 border-l border-outline-gray-1 pl-4">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-base-medium text-ink-gray-8">Recent screenings</h2>
+            <Button label="Refresh" variant="ghost" theme="gray" @click="loadHistory" />
+          </div>
+          <button
+            v-for="entry in activeOrRecentBatches"
+            :key="entry.id"
+            type="button"
+            class="block w-full rounded px-2 py-2 text-left hover:bg-surface-gray-1"
+            @click="openBatch(entry.id)"
+          >
+            <span class="block truncate text-sm font-medium text-ink-gray-8">{{ entry.title }}</span>
+            <span class="mt-1 flex items-center justify-between gap-2 text-xs text-ink-gray-5">
+              <span>{{ entry.accepted_count }} resume{{ entry.accepted_count === 1 ? '' : 's' }}</span>
+              <Badge :label="stageLabel(entry.status)" variant="subtle" theme="gray" />
+            </span>
+            <span class="mt-1 block text-xs text-ink-gray-5">{{ formatDate(entry.created_at) }}</span>
+          </button>
+        </section>
       </div>
 
       <div class="flex justify-center">
@@ -333,7 +416,7 @@ function stageLabel(value: string | null | undefined) {
             <h2 class="text-lg-semibold text-ink-gray-8">
               Screening {{ batch.accepted_count }} resume{{ batch.accepted_count === 1 ? '' : 's' }}
             </h2>
-            <p class="mt-1 text-p-sm text-ink-gray-5">{{ progressText }}</p>
+            <p class="mt-1 text-p-sm text-ink-gray-5">{{ progressText }} · {{ activeStageText }}</p>
             <p v-if="duplicateText" class="mt-1 text-p-sm text-ink-gray-5">{{ duplicateText }}</p>
           </div>
           <div class="flex items-center gap-2">
@@ -364,7 +447,17 @@ function stageLabel(value: string | null | undefined) {
                 <h3 class="min-w-0 truncate text-base-medium text-ink-gray-8">{{ candidateTitle(item) }}</h3>
                 <Badge :label="column.title" variant="subtle" :theme="column.theme" />
               </div>
-              <p class="line-clamp-3 text-p-sm leading-5 text-ink-gray-6">{{ candidateReason(item) }}</p>
+              <p class="text-p-sm leading-5 text-ink-gray-6" :class="reasonExpanded(item) ? '' : 'line-clamp-3'">
+                {{ candidateReason(item) }}
+              </p>
+              <button
+                v-if="reasonIsLong(item)"
+                type="button"
+                class="text-sm font-medium text-ink-gray-7 hover:text-ink-gray-9"
+                @click="toggleReason(item)"
+              >
+                {{ reasonExpanded(item) ? 'Read less' : 'Read more' }}
+              </button>
             </article>
           </div>
           <p v-else class="rounded border border-dashed border-outline-gray-2 px-3 py-8 text-center text-p-sm text-ink-gray-5">

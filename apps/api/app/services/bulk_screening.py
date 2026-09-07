@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
@@ -48,7 +49,7 @@ from app.services.screening import (
 )
 from app.services.structured_jd_contract import (
     DESIGNATION_OPTIONS,
-    require_target_designation_if_needed,
+    designation_options_for_structured_jd,
     validate_structured_jd_for_engine,
 )
 from fastapi import UploadFile
@@ -65,6 +66,15 @@ UNSUPPORTED_AUDITED_EXTENSIONS = {".doc", ".rtf", ".tif", ".tiff", ".heic", ".jp
 
 logger = logging.getLogger(__name__)
 
+BULK_PROCESSING_STAGE_PROGRESS = {
+    "QUEUED": 0,
+    "READING_RESUME": 15,
+    "STRUCTURING_PROFILE": 45,
+    "COMPARING_WITH_JD": 75,
+    "COMPLETED": 100,
+}
+ProgressCallback = Callable[[str], None]
+
 
 @dataclass(frozen=True)
 class BulkUploadCandidate:
@@ -73,11 +83,17 @@ class BulkUploadCandidate:
     content_type: str
 
 
+@dataclass(frozen=True)
+class BulkVariantEvaluation:
+    designation: str | None
+    result: ProviderExecutionResult
+
+
 class BulkScreeningProvider(Protocol):
     name: str
     engine_version: str
 
-    def evaluate(self, item: BulkScreeningItem) -> ProviderExecutionResult:
+    def evaluate(self, item: BulkScreeningItem, progress: ProgressCallback | None = None) -> ProviderExecutionResult:
         ...
 
 
@@ -85,14 +101,20 @@ class MockBulkScreeningProvider:
     name = "mock"
     engine_version = "mock-bulk-screening-v1"
 
-    def evaluate(self, item: BulkScreeningItem) -> ProviderExecutionResult:
+    def evaluate(self, item: BulkScreeningItem, progress: ProgressCallback | None = None) -> ProviderExecutionResult:
+        if progress:
+            progress("READING_RESUME")
         document = item.resume_document
         if document is None:
             raise EngineProviderError("DOCUMENT_NOT_FOUND", "Bulk screening item has no stored resume")
         data = LocalDocumentStorage().resolve_path(document).read_bytes().lower()
+        if progress:
+            progress("STRUCTURING_PROFILE")
         criteria = item.batch.criteria_snapshot or [
             {"criterion_id": "required", "name": "Required evidence", "category": "skill", "weight": 100}
         ]
+        if progress:
+            progress("COMPARING_WITH_JD")
         if b"provider failure" in data:
             raise EngineProviderError("ENGINE_EXECUTION_FAILED", "Synthetic provider failure")
         if b"review" in data or b"ambiguous" in data:
@@ -211,13 +233,13 @@ class HiringScreeningEngineBulkProvider:
     name = "hiring-screening-engine"
     engine_version = "screening-v1"
 
-    def evaluate(self, item: BulkScreeningItem) -> ProviderExecutionResult:
+    def evaluate(self, item: BulkScreeningItem, progress: ProgressCallback | None = None) -> ProviderExecutionResult:
         if not item.batch.criteria_snapshot:
             raise EngineProviderError("RUBRIC_NOT_APPROVED", "Bulk screening requires confirmed screening criteria")
         if not item.resume_document:
             raise EngineProviderError("DOCUMENT_NOT_FOUND", "Bulk screening requires a stored resume document")
-        structured_jd = _structured_jd_for_batch(item.batch)
-        if not structured_jd:
+        structured_jd_variants = _structured_jd_variants_for_batch(item.batch)
+        if not structured_jd_variants:
             raise EngineProviderError("RUBRIC_NOT_APPROVED", "Bulk screening requires a StructuredJD payload")
 
         settings = get_settings()
@@ -227,17 +249,18 @@ class HiringScreeningEngineBulkProvider:
         output_root = Path(settings.screening_output_root).expanduser().resolve()
         run_dir = output_root / "bulk" / item.id
         run_dir.mkdir(parents=True, exist_ok=True)
-        structured_jd_path = run_dir / "structured-jd.json"
         structured_resume_path = run_dir / "structured-resume.json"
-        evaluation_path = run_dir / "evaluation.json"
-        structured_jd_path.write_text(json.dumps(structured_jd, indent=2), encoding="utf-8")
 
         resume_path = LocalDocumentStorage().resolve_path(item.resume_document)
         primary_env = _engine_environment(settings, gemma_base_url=settings.screening_gemma_base_url)
         model_endpoint_slot: str | None = None
         if resume_path.suffix.lower() == ".json":
+            if progress:
+                progress("READING_RESUME")
             structured_resume_path.write_bytes(resume_path.read_bytes())
         elif resume_path.suffix.lower() == ".pdf":
+            if progress:
+                progress("READING_RESUME")
             ocr_dir = run_dir / "ocr"
             _run_bulk_engine_stage(
                 _engine_command(
@@ -255,6 +278,8 @@ class HiringScreeningEngineBulkProvider:
                 item_id=item.id,
                 stage="ocr",
             )
+            if progress:
+                progress("STRUCTURING_PROFILE")
             model_endpoint_slot = self._structure_resume_with_gemma_fallback(
                 settings=settings,
                 engine_root=engine_root,
@@ -267,6 +292,8 @@ class HiringScreeningEngineBulkProvider:
         else:
             raise EngineProviderError("ENGINE_CONFIGURATION_ERROR", "Real bulk provider supports JSON or PDF resumes")
 
+        if progress:
+            progress("COMPARING_WITH_JD")
         eval_env = _engine_environment(
             settings,
             gemma_base_url=(
@@ -275,6 +302,62 @@ class HiringScreeningEngineBulkProvider:
                 else settings.screening_gemma_base_url
             ),
         )
+        results = [
+            self._evaluate_structured_resume_variant(
+                item=item,
+                settings=settings,
+                engine_root=engine_root,
+                run_dir=run_dir,
+                structured_resume_path=structured_resume_path,
+                structured_jd=structured_jd,
+                designation=designation,
+                index=index,
+                env=eval_env,
+                model_endpoint_slot=model_endpoint_slot,
+            )
+            for index, (designation, structured_jd) in enumerate(structured_jd_variants, start=1)
+        ]
+        selected = _strongest_variant_result(results)
+        payload = dict(selected.result.payload)
+        if len(results) > 1:
+            payload["bulk_designation_evaluation"] = {
+                "selected_designation": selected.designation,
+                "evaluated_designations": [result.designation for result in results],
+                "aggregation_rule": "meets_else_review_else_does_not_meet",
+            }
+            payload["warnings"] = [
+                *[str(warning) for warning in payload.get("warnings", [])],
+                "Multiple JD designation variants were evaluated from the same structured resume.",
+            ]
+        return ProviderExecutionResult(
+            provider=self.name,
+            provider_engine_version=self.engine_version,
+            payload=payload,
+            model_endpoint_slot=model_endpoint_slot,
+            raw_result_ref=selected.result.raw_result_ref,
+            structured_jd_path=selected.result.structured_jd_path,
+            structured_resume_path=structured_resume_path,
+            engine_code_version=_engine_git_commit(engine_root, settings),
+        )
+
+    def _evaluate_structured_resume_variant(
+        self,
+        *,
+        item: BulkScreeningItem,
+        settings,
+        engine_root: Path,
+        run_dir: Path,
+        structured_resume_path: Path,
+        structured_jd: dict[str, Any],
+        designation: str | None,
+        index: int,
+        env: dict[str, str],
+        model_endpoint_slot: str | None,
+    ) -> BulkVariantEvaluation:
+        suffix = _designation_artifact_suffix(designation) if designation else "single"
+        structured_jd_path = run_dir / f"structured-jd-{suffix}.json"
+        evaluation_path = run_dir / f"evaluation-{suffix}.json"
+        structured_jd_path.write_text(json.dumps(structured_jd, indent=2), encoding="utf-8")
         _run_bulk_engine_stage(
             _engine_command(
                 settings,
@@ -288,11 +371,12 @@ class HiringScreeningEngineBulkProvider:
             ),
             cwd=engine_root,
             timeout=settings.screening_engine_timeout_seconds,
-            env=eval_env,
+            env=env,
             failure_code="ENGINE_EXECUTION_FAILED",
             batch_id=item.batch.id,
             item_id=item.id,
-            stage="candidate_evaluation",
+            stage=f"candidate_evaluation_{index}",
+            model_endpoint_slot=model_endpoint_slot,
         )
         if not evaluation_path.is_file():
             raise EngineProviderError("ENGINE_OUTPUT_MISSING", "Engine evaluation artifact was not created")
@@ -303,15 +387,18 @@ class HiringScreeningEngineBulkProvider:
                 "ENGINE_OUTPUT_INVALID",
                 "Engine evaluation artifact is not valid JSON",
             ) from error
-        return ProviderExecutionResult(
-            provider=self.name,
-            provider_engine_version=self.engine_version,
-            payload=payload,
-            model_endpoint_slot=model_endpoint_slot,
-            raw_result_ref=f"{Path(settings.screening_output_root).name}/bulk/{item.id}/evaluation.json",
-            structured_jd_path=structured_jd_path,
-            structured_resume_path=structured_resume_path,
-            engine_code_version=_engine_git_commit(engine_root, settings),
+        return BulkVariantEvaluation(
+            designation=designation,
+            result=ProviderExecutionResult(
+                provider=self.name,
+                provider_engine_version=self.engine_version,
+                payload=payload,
+                model_endpoint_slot=model_endpoint_slot,
+                raw_result_ref=f"{Path(settings.screening_output_root).name}/bulk/{item.id}/{evaluation_path.name}",
+                structured_jd_path=structured_jd_path,
+                structured_resume_path=structured_resume_path,
+                engine_code_version=_engine_git_commit(engine_root, settings),
+            ),
         )
 
     def _structure_resume_with_gemma_fallback(
@@ -455,8 +542,7 @@ def create_existing_job_batch(
     if rubric_version is None:
         raise InvalidTransition("Bulk screening requires the job's current approved rubric version")
     target_designation = job.designation if job.designation in DESIGNATION_OPTIONS else None
-    require_target_designation_if_needed(rubric_version.structured_jd_payload, target_designation)
-    validate_structured_jd_for_engine(rubric_version.structured_jd_payload, target_designation=target_designation)
+    _structured_jd_variants_for_payload(rubric_version.structured_jd_payload, target_designation=target_designation)
     batch = BulkScreeningBatch(
         created_by=actor,
         source_type=BulkScreeningSourceType.EXISTING_JOB,
@@ -545,15 +631,10 @@ def confirm_ad_hoc_criteria(
         raise InvalidTransition("Only ad-hoc JD batches require criteria confirmation")
     if not batch.ad_hoc_structured_jd or not batch.criteria_snapshot:
         raise InvalidTransition("Ad-hoc JD criteria are not available")
-    require_target_designation_if_needed(batch.ad_hoc_structured_jd, target_designation or batch.target_designation)
     batch.target_designation = target_designation or batch.target_designation
     _validate_structured_jd_confirmation(
         batch.ad_hoc_structured_jd,
         batch.criteria_snapshot,
-        target_designation=batch.target_designation,
-    )
-    validate_structured_jd_for_engine(
-        {**batch.ad_hoc_structured_jd, "scoring_rubric": batch.criteria_snapshot},
         target_designation=batch.target_designation,
     )
     batch.criteria_confirmed_by = actor
@@ -584,7 +665,6 @@ def reconcile_ad_hoc_criteria(
         raise InvalidTransition("Only draft ad-hoc JD criteria can be reconciled")
     if not batch.ad_hoc_structured_jd or not batch.criteria_snapshot:
         raise InvalidTransition("Ad-hoc JD criteria are not available")
-    require_target_designation_if_needed(batch.ad_hoc_structured_jd, target_designation or batch.target_designation)
     batch.target_designation = target_designation or batch.target_designation
     mandatory_ids = {
         requirement.get("requirement_id") or requirement.get("id")
@@ -641,7 +721,7 @@ def start_batch(db: Session, actor: User, batch_id: str) -> BulkScreeningBatch:
         raise InvalidTransition("Only a reviewed, ready batch can be started")
     if batch.source_type == BulkScreeningSourceType.ADHOC_JD and not batch.criteria_confirmed_at:
         raise InvalidTransition("Confirm ad-hoc JD criteria before screening resumes")
-    validate_structured_jd_for_engine(_structured_jd_for_batch(batch), target_designation=batch.target_designation)
+    _structured_jd_variants_for_batch(batch)
     queueable = [
         item
         for item in batch.items
@@ -650,10 +730,16 @@ def start_batch(db: Session, actor: User, batch_id: str) -> BulkScreeningBatch:
     if not queueable:
         raise InvalidTransition("Batch has no validated unique resumes ready to screen")
     for item in queueable:
+        item.processing_stage = "QUEUED"
+        item.progress_percent = 0
+        item.stage_updated_at = utcnow()
         db.add(
             BulkScreeningWorkItem(
                 item=item,
                 status=BulkScreeningItemStatus.PENDING,
+                processing_stage="QUEUED",
+                progress_percent=0,
+                stage_updated_at=item.stage_updated_at,
                 max_attempts=get_settings().screening_worker_max_attempts,
             )
         )
@@ -716,7 +802,7 @@ def resume_failed_batch(db: Session, actor: User, batch_id: str) -> BulkScreenin
     batch = get_batch(db, actor, batch_id)
     if batch.status != BulkScreeningBatchStatus.FAILED:
         raise InvalidTransition("Only failed bulk screening batches can be resumed")
-    validate_structured_jd_for_engine(_structured_jd_for_batch(batch), target_designation=batch.target_designation)
+    _structured_jd_variants_for_batch(batch)
     reset_count = 0
     for item in batch.items:
         if item.status == BulkScreeningItemStatus.COMPLETED:
@@ -731,9 +817,15 @@ def resume_failed_batch(db: Session, actor: User, batch_id: str) -> BulkScreenin
         item.failure_code = None
         item.failure_message = None
         item.failed_at = None
+        item.processing_stage = "QUEUED"
+        item.progress_percent = 0
+        item.stage_updated_at = utcnow()
         if item.work_item:
             item.work_item.status = BulkScreeningItemStatus.PENDING
             item.work_item.attempts = 0
+            item.work_item.processing_stage = "QUEUED"
+            item.work_item.progress_percent = 0
+            item.work_item.stage_updated_at = item.stage_updated_at
             item.work_item.locked_at = None
             item.work_item.started_at = None
             item.work_item.completed_at = None
@@ -745,6 +837,9 @@ def resume_failed_batch(db: Session, actor: User, batch_id: str) -> BulkScreenin
                 BulkScreeningWorkItem(
                     item=item,
                     status=BulkScreeningItemStatus.PENDING,
+                    processing_stage="QUEUED",
+                    progress_percent=0,
+                    stage_updated_at=item.stage_updated_at,
                     max_attempts=get_settings().screening_worker_max_attempts,
                 )
             )
@@ -808,11 +903,16 @@ def process_bulk_screening_job(
     item.status = BulkScreeningItemStatus.RUNNING
     item.started_at = utcnow()
     batch.status = BulkScreeningBatchStatus.RUNNING
-    db.flush()
+    _set_bulk_processing_stage(db, job, "READING_RESUME", commit=True)
     logger.info("bulk_screening.item_started batch_id=%s item_id=%s provider=%s", batch.id, item.id, provider.name)
     try:
-        result = provider.evaluate(item)
+        result = _evaluate_bulk_provider(
+            provider,
+            item,
+            progress=lambda stage: _set_bulk_processing_stage(db, job, stage, commit=True),
+        )
         _apply_bulk_result(item, result)
+        _set_bulk_processing_stage(db, job, "COMPLETED", commit=False)
         item.status = BulkScreeningItemStatus.COMPLETED
         item.completed_at = utcnow()
         job.status = BulkScreeningItemStatus.COMPLETED
@@ -847,12 +947,14 @@ def process_bulk_screening_job(
             item.failed_at = utcnow()
             item.failure_code = failure_code
             item.failure_message = message
+            item.progress_percent = 100
             item.provider = getattr(provider, "name", None)
             item.provider_engine_version = getattr(provider, "engine_version", None)
             job.status = BulkScreeningItemStatus.FAILED
             job.failed_at = utcnow()
             job.failure_code = failure_code
             job.failure_message = message
+            job.progress_percent = 100
             batch.status = BulkScreeningBatchStatus.FAILED
             batch.completed_at = batch.completed_at or utcnow()
             batch.failure_code = failure_code
@@ -867,7 +969,13 @@ def process_bulk_screening_job(
             )
         elif job.attempts < job.max_attempts:
             item.status = BulkScreeningItemStatus.PENDING
+            item.processing_stage = "QUEUED"
+            item.progress_percent = 0
+            item.stage_updated_at = utcnow()
             job.status = BulkScreeningItemStatus.PENDING
+            job.processing_stage = "QUEUED"
+            job.progress_percent = 0
+            job.stage_updated_at = item.stage_updated_at
             job.failure_code = failure_code
             job.failure_message = message
             record_audit(
@@ -892,12 +1000,14 @@ def process_bulk_screening_job(
             item.failed_at = utcnow()
             item.failure_code = failure_code
             item.failure_message = message
+            item.progress_percent = 100
             item.provider = getattr(provider, "name", None)
             item.provider_engine_version = getattr(provider, "engine_version", None)
             job.status = BulkScreeningItemStatus.FAILED
             job.failed_at = utcnow()
             job.failure_code = item.failure_code
             job.failure_message = message
+            job.progress_percent = 100
             record_audit(
                 db,
                 actor_id=actor.id,
@@ -940,6 +1050,7 @@ def batch_to_read(batch: BulkScreeningBatch, *, include_items: bool = True) -> d
         "unsupported_count": batch.unsupported_count,
         "completed_count": batch.completed_count,
         "failed_count": batch.failed_count,
+        "progress_percent": batch.progress_percent,
         "failure_code": batch.failure_code,
         "failure_message": safe_bulk_failure_message(batch.failure_code, batch.failure_message),
         "started_at": batch.started_at,
@@ -971,6 +1082,7 @@ def batch_to_summary(batch: BulkScreeningBatch) -> dict[str, Any]:
         "unsupported_count": batch.unsupported_count,
         "completed_count": batch.completed_count,
         "failed_count": batch.failed_count,
+        "progress_percent": batch.progress_percent,
         "failure_code": batch.failure_code,
         "failure_message": safe_bulk_failure_message(batch.failure_code, batch.failure_message),
         "created_at": batch.created_at,
@@ -990,6 +1102,9 @@ def item_to_read(item: BulkScreeningItem) -> dict[str, Any]:
         "content_sha256": item.content_sha256,
         "duplicate_of_item_id": item.duplicate_of_item_id,
         "status": item.status,
+        "processing_stage": item.processing_stage,
+        "progress_percent": item.progress_percent,
+        "stage_updated_at": item.stage_updated_at,
         "classification": item.classification,
         "concise_reason": item.concise_reason,
         "candidate_name": item.candidate_name,
@@ -1413,7 +1528,7 @@ def _validate_structured_jd_confirmation(
     for warning in warnings:
         if any(phrase in warning for phrase in blocking_phrases):
             raise InvalidTransition("Ad-hoc JD criteria contain unresolved grounding warnings")
-    validate_structured_jd_for_engine(
+    _validate_structured_jd_variants_for_engine(
         {**structured_jd, "scoring_rubric": criteria},
         target_designation=target_designation,
     )
@@ -1433,6 +1548,17 @@ def _refresh_batch_counts(batch: BulkScreeningBatch) -> None:
     batch.unsupported_count = len([item for item in items if item.status == BulkScreeningItemStatus.UNSUPPORTED])
     batch.completed_count = len([item for item in items if item.status == BulkScreeningItemStatus.COMPLETED])
     batch.failed_count = len([item for item in items if item.status == BulkScreeningItemStatus.FAILED])
+    progressed_items = [
+        item
+        for item in items
+        if item.status not in {BulkScreeningItemStatus.DUPLICATE, BulkScreeningItemStatus.UNSUPPORTED}
+        and item.resume_document_id
+    ]
+    batch.progress_percent = (
+        round(sum(_item_progress_percent(item) for item in progressed_items) / len(progressed_items))
+        if progressed_items
+        else 0
+    )
     active = [BulkScreeningItemStatus.PENDING, BulkScreeningItemStatus.RUNNING]
     if batch.accepted_count and all(item.status not in active for item in items if item.resume_document_id):
         batch.completed_at = batch.completed_at or utcnow()
@@ -1441,6 +1567,7 @@ def _refresh_batch_counts(batch: BulkScreeningBatch) -> None:
             if batch.failed_count == batch.accepted_count
             else BulkScreeningBatchStatus.COMPLETED
         )
+        batch.progress_percent = 100
 
 
 def _current_approved_rubric(job: Job) -> JobRubricVersion | None:
@@ -1456,11 +1583,109 @@ def _current_approved_rubric(job: Job) -> JobRubricVersion | None:
 
 
 def _structured_jd_for_batch(batch: BulkScreeningBatch) -> dict:
+    return _structured_jd_variants_for_batch(batch)[0][1]
+
+
+def _structured_jd_variants_for_batch(batch: BulkScreeningBatch) -> list[tuple[str | None, dict[str, Any]]]:
     if batch.source_type == BulkScreeningSourceType.EXISTING_JOB and batch.rubric_version:
         payload = batch.rubric_version.structured_jd_payload
     else:
         payload = {**(batch.ad_hoc_structured_jd or {}), "scoring_rubric": batch.criteria_snapshot or []}
-    return validate_structured_jd_for_engine(payload, target_designation=batch.target_designation).canonical_payload
+    return _structured_jd_variants_for_payload(payload, target_designation=batch.target_designation)
+
+
+def _structured_jd_variants_for_payload(
+    payload: dict[str, Any],
+    *,
+    target_designation: str | None = None,
+) -> list[tuple[str | None, dict[str, Any]]]:
+    if target_designation:
+        return [
+            (
+                target_designation,
+                validate_structured_jd_for_engine(payload, target_designation=target_designation).canonical_payload,
+            )
+        ]
+    options = designation_options_for_structured_jd(payload)
+    if len(options) <= 1:
+        return [(options[0] if options else None, validate_structured_jd_for_engine(payload).canonical_payload)]
+    return [
+        (designation, validate_structured_jd_for_engine(payload, target_designation=designation).canonical_payload)
+        for designation in options
+    ]
+
+
+def _validate_structured_jd_variants_for_engine(
+    payload: dict[str, Any],
+    *,
+    target_designation: str | None = None,
+) -> None:
+    _structured_jd_variants_for_payload(payload, target_designation=target_designation)
+
+
+def _strongest_variant_result(results: list[BulkVariantEvaluation]) -> BulkVariantEvaluation:
+    if not results:
+        raise EngineProviderError("ENGINE_OUTPUT_MISSING", "Engine evaluation artifact was not created")
+    rank = {
+        BulkScreeningClassification.MEETS_CRITERIA: 3,
+        BulkScreeningClassification.NEEDS_REVIEW: 2,
+        BulkScreeningClassification.DOES_NOT_MEET_CRITERIA: 1,
+    }
+    return max(results, key=lambda result: rank[_classification_from_payload(result.result.payload)])
+
+
+def _evaluate_bulk_provider(
+    provider: BulkScreeningProvider,
+    item: BulkScreeningItem,
+    *,
+    progress: ProgressCallback,
+) -> ProviderExecutionResult:
+    try:
+        return provider.evaluate(item, progress=progress)
+    except TypeError as error:
+        if "progress" not in str(error):
+            raise
+        return provider.evaluate(item)  # type: ignore[call-arg]
+
+
+def _set_bulk_processing_stage(
+    db: Session,
+    job: BulkScreeningWorkItem,
+    stage: str,
+    *,
+    commit: bool,
+) -> None:
+    now = utcnow()
+    progress = BULK_PROCESSING_STAGE_PROGRESS.get(stage, job.progress_percent)
+    item = job.item
+    batch = item.batch
+    job.processing_stage = stage
+    job.progress_percent = progress
+    job.stage_updated_at = now
+    item.processing_stage = stage
+    item.progress_percent = progress
+    item.stage_updated_at = now
+    if stage == "COMPLETED":
+        item.status = BulkScreeningItemStatus.COMPLETED
+        job.status = BulkScreeningItemStatus.COMPLETED
+    else:
+        item.status = BulkScreeningItemStatus.RUNNING
+        job.status = BulkScreeningItemStatus.RUNNING
+        batch.status = BulkScreeningBatchStatus.RUNNING
+    _refresh_batch_counts(batch)
+    db.flush()
+    if commit:
+        db.commit()
+
+
+def _item_progress_percent(item: BulkScreeningItem) -> int:
+    if item.status in {BulkScreeningItemStatus.COMPLETED, BulkScreeningItemStatus.FAILED}:
+        return 100
+    return max(0, min(100, int(item.progress_percent or 0)))
+
+
+def _designation_artifact_suffix(designation: str) -> str:
+    return "".join(char if char.isalnum() else "-" for char in designation.lower()).strip("-") or "designation"
 
 
 def _generate_ad_hoc_structured_jd(document: Document) -> dict[str, Any]:

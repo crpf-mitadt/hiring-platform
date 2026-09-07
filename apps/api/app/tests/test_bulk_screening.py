@@ -5,7 +5,11 @@ import zipfile
 from pathlib import Path
 
 from app.models import BulkScreeningItem, BulkScreeningWorkItem, Job, JobRubricVersion
-from app.services.bulk_screening import process_next_bulk_screening_jobs
+from app.services.bulk_screening import (
+    BulkVariantEvaluation,
+    _strongest_variant_result,
+    process_next_bulk_screening_jobs,
+)
 from app.services.rubric_utils import rubric_payload_hash
 from app.services.screening import ProviderExecutionResult
 from app.services.structured_jd_contract import validate_structured_jd_for_engine
@@ -358,31 +362,24 @@ def test_simple_bulk_screening_reconciles_deterministic_mandatory_criteria(clien
     assert response.json()["criteria_snapshot"][0]["mandatory"] is True
 
 
-def test_simple_bulk_screening_requires_designation_for_multi_rank_jd(client, monkeypatch, users):
+def test_simple_bulk_screening_accepts_multi_rank_jd_without_designation_selector(client, monkeypatch, users):
     monkeypatch.setattr(
         "app.services.bulk_screening._generate_ad_hoc_structured_jd",
         lambda _document: _multi_designation_structured_jd(),
     )
 
-    missing_target = _create_simple_batch(
+    response = _create_simple_batch(
         client,
         users["recruiter"]["id"],
         b"assistant associate professor",
         [_resume_file("candidate.pdf")],
-    )
-    assistant = _create_simple_batch(
-        client,
-        users["recruiter"]["id"],
-        b"assistant associate professor",
-        [_resume_file("candidate.pdf")],
-        target_designation="Assistant Professor",
     )
 
-    assert missing_target.status_code == 409
-    assert missing_target.json()["code"] == "TARGET_DESIGNATION_REQUIRED"
-    assert assistant.status_code == 200, assistant.text
-    assert assistant.json()["target_designation"] == "Assistant Professor"
-    assert assistant.json()["status"] == "QUEUED"
+    assert response.status_code == 200, response.text
+    assert response.json()["target_designation"] is None
+    assert response.json()["status"] == "QUEUED"
+    assert response.json()["progress_percent"] == 0
+    assert response.json()["items"][0]["processing_stage"] == "QUEUED"
 
 
 def test_simple_bulk_screening_invalid_jd_preflight_prevents_resume_queueing(client, db_session, monkeypatch, users):
@@ -447,6 +444,59 @@ def test_simple_bulk_screening_processes_mock_results_into_final_classifications
     assert "technical processing failure" in technical["concise_reason"]
     assert "/home/" not in (technical["failure_message"] or "")
     assert "Traceback" not in (technical["failure_message"] or "")
+
+
+def test_bulk_screening_commits_running_stage_before_provider_finishes(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("candidate.pdf", b"%PDF-1.4 meets all required evidence")],
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["id"]
+
+    class InspectingProvider:
+        name = "inspecting-provider"
+        engine_version = "test"
+
+        def evaluate(self, item, progress=None):
+            if progress:
+                progress("STRUCTURING_PROFILE")
+            visible = client.get(
+                f"/api/bulk-screening/batches/{batch_id}",
+                headers={"X-Actor-Id": users["recruiter"]["id"]},
+            )
+            assert visible.status_code == 200, visible.text
+            body = visible.json()
+            assert body["status"] == "RUNNING"
+            assert body["progress_percent"] > 0
+            assert body["items"][0]["status"] == "RUNNING"
+            assert body["items"][0]["processing_stage"] == "STRUCTURING_PROFILE"
+            assert body["items"][0]["progress_percent"] == 45
+            if progress:
+                progress("COMPARING_WITH_JD")
+            return ProviderExecutionResult(
+                provider=self.name,
+                provider_engine_version=self.engine_version,
+                payload={
+                    "artifact_schema_version": "candidate-evaluation-v1",
+                    "eligibility": {"status": "PASS"},
+                    "criterion_evaluations": [],
+                    "evidence_completeness": 1,
+                    "experience_summary": {"confirmed_months": 24},
+                },
+            )
+
+    assert process_next_bulk_screening_jobs(db_session, provider=InspectingProvider()) == 1
+    db_session.commit()
+    completed = client.get(
+        f"/api/bulk-screening/batches/{batch_id}",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    ).json()
+    assert completed["status"] == "COMPLETED"
+    assert completed["progress_percent"] == 100
+    assert completed["items"][0]["processing_stage"] == "COMPLETED"
 
 
 def test_bulk_screening_handles_duplicates_and_unsupported_files_before_review(
@@ -865,7 +915,7 @@ def test_bulk_screening_returns_structured_ad_hoc_requirement_conflicts(client, 
     assert criterion["mandatory"] is True
 
 
-def test_bulk_screening_requires_target_designation_for_multi_rank_ad_hoc_jd(client, monkeypatch, users):
+def test_bulk_screening_confirms_multi_rank_ad_hoc_jd_without_target_designation(client, monkeypatch, users):
     jd_payload = _multi_designation_structured_jd()
     monkeypatch.setattr("app.services.bulk_screening._generate_ad_hoc_structured_jd", lambda _document: jd_payload)
     created = client.post(
@@ -874,21 +924,15 @@ def test_bulk_screening_requires_target_designation_for_multi_rank_ad_hoc_jd(cli
         files={"jd_file": ("faculty-jd.txt", b"assistant associate professor", "text/plain")},
     )
 
-    missing_target = client.post(
+    confirmed = client.post(
         f"/api/bulk-screening/batches/{created.json()['id']}/confirm-criteria",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
         json={"confirmed": True},
     )
-    assistant = client.post(
-        f"/api/bulk-screening/batches/{created.json()['id']}/confirm-criteria",
-        headers={"X-Actor-Id": users["recruiter"]["id"]},
-        json={"confirmed": True, "target_designation": "Assistant Professor"},
-    )
 
-    assert missing_target.status_code == 409
-    assert missing_target.json()["code"] == "TARGET_DESIGNATION_REQUIRED"
-    assert assistant.status_code == 200, assistant.text
-    assert assistant.json()["target_designation"] == "Assistant Professor"
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["target_designation"] is None
+    assert confirmed.json()["status"] == "READY"
 
 
 def test_designation_filtered_structured_jd_does_not_require_all_rank_thresholds():
@@ -909,6 +953,29 @@ def test_designation_filtered_structured_jd_does_not_require_all_rank_thresholds
     assert "minimum 10 years" in professor_text
     assert "2+ papers in scopus/wos" not in professor_text
     assert sum(criterion["weight"] for criterion in professor["scoring_rubric"]) == 100
+
+
+def test_bulk_designation_variant_aggregation_prefers_meeting_variant():
+    review = BulkVariantEvaluation(
+        designation="Professor",
+        result=ProviderExecutionResult(
+            provider="test",
+            provider_engine_version="test",
+            payload={"eligibility": {"status": "REVIEW"}, "criterion_evaluations": []},
+        ),
+    )
+    meets = BulkVariantEvaluation(
+        designation="Assistant Professor",
+        result=ProviderExecutionResult(
+            provider="test",
+            provider_engine_version="test",
+            payload={"eligibility": {"status": "PASS"}, "criterion_evaluations": []},
+        ),
+    )
+
+    selected = _strongest_variant_result([review, meets])
+
+    assert selected.designation == "Assistant Professor"
 
 
 def test_bulk_screening_systemic_failure_stops_remaining_pending_work(client, db_session, users, published_job):
