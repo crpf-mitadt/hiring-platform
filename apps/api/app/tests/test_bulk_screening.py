@@ -14,38 +14,29 @@ from app.services.rubric_utils import rubric_payload_hash
 from app.services.screening import ProviderExecutionResult
 from app.services.structured_jd_contract import validate_structured_jd_for_engine
 from app.worker import run_pending_screening_jobs
+from pypdf import PdfWriter
 from sqlalchemy import select
 
 
 def _pdf_bytes(text: bytes | str = b"meets all required evidence", *, pages: int = 1) -> bytes:
-    body = text if isinstance(text, bytes) else text.encode()
-    page_objects = []
-    kids = []
-    object_id = 3
-    for index in range(pages):
-        page_id = object_id
-        content_id = object_id + 1
-        object_id += 2
-        kids.append(f"{page_id} 0 R")
-        stream = body + f" page {index + 1}".encode()
-        page_objects.append(
-            (
-                f"{page_id} 0 obj << /Type /Page /Parent 2 0 R /Resources << >> "
-                f"/MediaBox [0 0 612 792] /Contents {content_id} 0 R >> endobj\n"
-            ).encode()
-        )
-        page_objects.append(
-            b"%d 0 obj << /Length %d >> stream\n%s\nendstream endobj\n" % (content_id, len(stream), stream)
-        )
-    return b"".join(
-        [
-            b"%PDF-1.4\n",
-            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
-            f"2 0 obj << /Type /Pages /Kids [{' '.join(kids)}] /Count {pages} >> endobj\n".encode(),
-            *page_objects,
-            b"%%EOF\n",
-        ]
-    )
+    writer = PdfWriter()
+    for _index in range(pages):
+        writer.add_blank_page(width=612, height=792)
+    body = text.decode("utf-8", errors="ignore") if isinstance(text, bytes) else text
+    writer.add_metadata({"/Subject": body})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _encrypted_pdf_bytes(*, pages: int = 1) -> bytes:
+    writer = PdfWriter()
+    for _index in range(pages):
+        writer.add_blank_page(width=612, height=792)
+    writer.encrypt("secret")
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _resume_file(filename: str, content: bytes | str | None = None, *, pages: int = 1):
@@ -374,6 +365,20 @@ def test_simple_bulk_screening_accepts_four_page_pdf_resume(client, db_session, 
     assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 1
 
 
+def test_simple_bulk_screening_pdf_text_markers_do_not_change_parser_page_count(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [_resume_file("marker-text.pdf", "resume text mentions /Type /Page /Type /Page", pages=1)],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted_count"] == 1
+    assert response.json()["items"][0]["status"] == "PENDING"
+    assert len(list(db_session.scalars(select(BulkScreeningWorkItem)))) == 1
+
+
 def test_simple_bulk_screening_rejects_five_page_resume_before_queueing(client, db_session, users):
     response = _create_simple_batch(
         client,
@@ -458,6 +463,22 @@ def test_simple_bulk_screening_invalid_pdf_is_reported_safely_before_queueing(cl
     assert response.json()["code"] == "NO_SCREENABLE_RESUMES"
     assert response.json()["issues"][0]["type"] == "INVALID_PDF"
     assert response.json()["issues"][0]["original_filename"] == "invalid.pdf"
+    assert db_session.scalar(select(BulkScreeningWorkItem)) is None
+    assert db_session.scalar(select(BulkScreeningBatch)) is None
+
+
+def test_simple_bulk_screening_encrypted_pdf_is_reported_safely_before_queueing(client, db_session, users):
+    response = _create_simple_batch(
+        client,
+        users["recruiter"]["id"],
+        b"React Node.js SQL Laravel 24 months",
+        [("files", ("encrypted.pdf", _encrypted_pdf_bytes(), "application/pdf"))],
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "NO_SCREENABLE_RESUMES"
+    assert response.json()["issues"][0]["type"] == "INVALID_PDF"
+    assert response.json()["issues"][0]["original_filename"] == "encrypted.pdf"
     assert db_session.scalar(select(BulkScreeningWorkItem)) is None
     assert db_session.scalar(select(BulkScreeningBatch)) is None
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import re
 import time
 import zipfile
 from collections.abc import Callable
@@ -54,6 +53,8 @@ from app.services.structured_jd_contract import (
     validate_structured_jd_for_engine,
 )
 from fastapi import UploadFile
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -1674,8 +1675,17 @@ def _validate_structured_jd_variants_for_engine(
 def _pdf_page_count(data: bytes) -> int | None:
     if not data.lstrip().startswith(b"%PDF-"):
         return None
-    count = len(re.findall(rb"/Type\s*/Page\b", data))
-    return count if count > 0 else None
+    try:
+        reader = PdfReader(BytesIO(data), strict=False)
+        if reader.is_encrypted:
+            try:
+                if reader.decrypt("") == 0:
+                    return None
+            except Exception:
+                return None
+        return len(reader.pages) or None
+    except (PdfReadError, OSError, ValueError, TypeError):
+        return None
 
 
 def _resume_validation_issues(batch: BulkScreeningBatch) -> list[dict[str, Any]]:
