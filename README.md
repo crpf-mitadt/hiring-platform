@@ -3,6 +3,19 @@
 Independent university recruitment platform built as a sibling repository to
 `hiring-screening-engine`.
 
+## Start here / Project KT
+
+This is the full-stack product repository: Vue 3/Frappe UI frontend, FastAPI
+backend, PostgreSQL persistence, recruitment workflows, and background screening
+jobs. New contributors should start with the canonical cross-repository
+[`docs/PROJECT_KT.md`](docs/PROJECT_KT.md) guide.
+
+The specialized OCR, structured extraction, deterministic evaluation, and
+reporting pipeline lives in the sibling
+[`hiring-screening-engine`](https://github.com/danishsshaikh/hiring-screening-engine)
+repository. The KT explains the contract between the two repositories, safe
+setup/testing paths, current implementation status, and contribution workflow.
+
 This foundation milestone includes:
 
 - FastAPI backend in `apps/api`.
