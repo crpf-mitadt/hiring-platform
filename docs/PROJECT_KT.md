@@ -2,17 +2,6 @@
 
 This is the canonical onboarding guide for the two repositories that make up the MIT-ADT AI Hiring project. It is written for contributors who have not seen the project before. Read it before changing either repository.
 
-## Audit snapshot
-
-This guide was checked against the source trees on 18 November 2026.
-
-| Repository | Audited branch | Audited HEAD | Working tree at audit start |
-| --- | --- | --- | --- |
-| [`hiring-platform`](https://github.com/danishsshaikh/hiring-platform) | `feature/bulk-screening` | `288b92e12157a07d2ba7e9bf0b007096f2927647` | Clean |
-| [`hiring-screening-engine`](https://github.com/danishsshaikh/hiring-screening-engine) | `main` | `3162575b1a15ecdb53b354da927c78340062f94c` | Clean |
-
-The platform's PostgreSQL migrations currently run from `0001_platform_foundation` through `0007_bulk_screening_progress`. The engine is also tagged `screening-v1` at its audited stable state. Re-check branch, commit, migrations, and dependency manifests when using this document after later changes.
-
 ## 1. Project overview
 
 ### The problem
@@ -216,12 +205,6 @@ flowchart LR
     Jobs -->|approved StructuredJD + resume| Ingest
     Reports -->|candidate-evaluation-v1| Jobs
 ```
-
-### Synchronous and asynchronous responsibilities
-
-Synchronous API work validates requests, stores documents/metadata, creates domain records, enqueues jobs, and returns. OCR, Gemma, and screening evaluation belong to the worker path. The worker can run once for controlled operations or continuously with increasing idle backoff. `SIGINT`/`SIGTERM` set a stop event for clean shutdown. Worker startup is deployment/supervisor responsibility, never a recruiter button.
-
-The current queue is implemented with database rows (`ScreeningJob` and `BulkScreeningWorkItem`), not Redis. A future queue implementation can replace the consumer while preserving provider/domain contracts.
 
 ## 5. Module-level knowledge transfer
 
@@ -712,53 +695,9 @@ Use only synthetic or explicitly sanitized fixtures. Do not log tokens, credenti
 | Proctoring | Planned | Platform | Role enum/future boundary only | No browser surveillance or automatic rejection. |
 | Offers/onboarding/employee HRMS | Planned | Platform | None | Outside current implemented scope. |
 | CI and branch protection | Needs verification | Both | No tracked workflows | Proposed policy only; repository settings were not changed/audited through admin APIs. |
-| Production deployment | Planned / external | Both | Reference docs and environment settings | No production process-manager/orchestration architecture in this milestone. |
+| Production deployment | Planned / external | Both | Reference docs and environment settings | No production process-manager/orchestration architecture in this milestone.
 
-## 14. Known issues and technical debt
-
-Only source-evidenced items are listed.
-
-| Evidence / reproduction entry point | Impact | Component | Investigation entry point |
-| --- | --- | --- | --- |
-| Platform tracks `package-lock.json` but no Python lockfile; backend dependencies are ranges in `pyproject.toml`. | Fresh backend installs can resolve different compatible versions. | Platform dependencies | Decide on a repository-wide lock workflow before introducing a lockfile. |
-| Both repositories have no tracked `.github/workflows` files at the audited commits. | Tests are not automatically enforced by repository CI. | Contribution governance | Add CI in a dedicated reviewed infrastructure task; keep current rules labelled proposed. |
-| Platform API tests use SQLite `:memory:`/`Base.metadata.create_all`, while production targets PostgreSQL/Alembic. | Fast tests may miss PostgreSQL dialect or migration-chain issues. | Platform database tests | `apps/api/app/tests/conftest.py`, Alembic migrations, PostgreSQL integration environment. |
-| Screening and bulk claim queries select the oldest pending row without an explicit `FOR UPDATE SKIP LOCKED` claim. | Safety with multiple concurrent worker processes is not established by the current code/tests. | Platform worker | `process_next_screening_job` and `process_next_bulk_screening_jobs`; keep one supervised consumer until concurrency is designed/tested. |
-| `HIRING_SCREENING_PROVIDER` defaults to `mock`. | Ordinary tests do not prove Chandra/Gemma availability or output quality. | Platform-engine integration | Engine provider contract tests plus controlled live AI validation. |
-| `App.vue` retains legacy bulk/showcase markup behind computed values that always return `false`. | Large dead paths make maintenance and route reasoning harder. | Platform frontend | `showcaseLegacyVisible`, `bulkLegacyVisible`, and guarded template blocks in `App.vue`. |
-| `BulkScreeningShowcase.vue` has a client-side `/Type /Page` text-marker precheck, while the server now uses `pypdf`. | The browser precheck can miscount some valid PDFs before the authoritative server validator sees them. | Platform frontend upload UX | `clientPdfPageCount`; remove or replace in a separately tested functional change. |
-| `candidate_safe_status` always returns `interview: None` even after follow-up reads are loaded. | Candidates cannot currently receive scheduled interview details through the application-scoped status response. | Platform candidate follow-up | `services/applications.py`, `services/followup.py`, and candidate-safe contract tests. |
-| `skip_intro_video` blocks only `IntroVideoMode.NONE`, so `REQUIRED` video can currently be skipped. | The persisted job mode does not enforce required candidate submission. | Platform candidate follow-up | `services/followup.py` and public-flow tests; define product behavior before changing it. |
-| `core/security.py` states that non-development actor providers are not implemented. | Production identity integration beyond password sessions/development actor fallback is incomplete. | Platform authentication | `get_actor`, settings, and deployment threat model. |
-| Staff Assessments, Interviews, and Final Decisions routes render informational alerts rather than complete queues. | Navigation can imply more workflow depth than currently exists. | Platform frontend/product | Bottom of `App.vue`, corresponding models/services, status table above. |
-
-## 15. Contributor orientation
-
-Choose work by ownership boundary, not by which language looks familiar. Each change should have a named maintainer/lead reviewer before implementation.
-
-| Contribution area | Repository and files to inspect first | Relevant tests | Contracts not to break | Maintainer review required when |
-| --- | --- | --- | --- | --- |
-| Public/staff UI behavior | Platform: `apps/web/src/App.vue`, `api/client.ts`, `api/types.ts`, `BulkScreeningShowcase.vue` | `App.test.ts`, `client.test.ts`, `design-conformance.test.ts` | Frappe UI public API, candidate-safe/staff-only separation, relative `/api` and cookie behavior, three bulk classifications | changing routes, API payloads, candidate visibility, or consequential actions |
-| Recruitment API/service behavior | Platform: matching `api/`, `schemas/`, `services/`, and `models/` files | focused pytest module plus full backend suite | route authorization, service-owned lifecycle rules, Pydantic response shape, audit/history creation | changing schema, permissions, migrations, application/job stages, or document policy |
-| Worker/provider orchestration | Platform: `worker.py`, `services/screening.py`, `services/bulk_screening.py`, `engine_mapping.py` | worker, provider-contract, mapper, and bulk tests | non-blocking API boundary, idempotency, immutable reruns, safe failures, engine artifact version | changing retries, queue claims, subprocess/environment contract, or failure classification |
-| Engine ingestion and structuring | Engine: `ingestion/`, `ocr/`, `llm/`, `pipeline/jd_structuring.py`, `pipeline/resume_structuring.py` | JD ingestion/structuring, OCR coverage/artifacts, resume structuring, LLM response tests | source provenance, bounded repair, no raw private output by default, strict schema versions | changing prompts, model settings, OCR completeness rules, or persisted artifacts |
-| Deterministic evaluation and reports | Engine: `schemas/`, `scoring/`, `reports/`, scoring-invariant docs | scoring correctness, invariant validator, report contract, safety/date regressions | approved discrete fractions, evidence-required positive scores, component/source classification, human-review requirement | always; scoring policy, eligibility, equivalence, privacy, and report semantics are lead-owned |
-| QA and cross-repository contracts | Both: platform engine fixtures/mapper tests plus engine synthetic fixtures/acceptance scripts | both repositories' offline suites | fixture privacy, `StructuredJD` and `candidate-evaluation-v1` compatibility, mocked-vs-live reporting | changing a shared artifact, adding sanitized regression data, or proposing live AI validation |
-
-### Safe starter tasks
-
-The project lead should select and scope one of these; they do not require GPU access or server credentials.
-
-- Add a focused frontend regression for an existing loading, empty, or safe-error state without changing API contracts.
-- Improve a project-specific documentation cross-link or module explanation after verifying the referenced source and test.
-- Add a synthetic report-rendering regression in the engine for an already-supported `CandidateEvaluationReport` shape without changing scoring policy.
-- Add a platform mapper test for an already-supported warning/evidence field using sanitized JSON fixtures.
-- Add test coverage that exposes an existing documented limitation before a maintainer-approved fix, such as candidate interview serialization or browser/server PDF page-count disagreement.
-- Remove a small unreachable frontend fragment only when existing behavior is covered and the lead confirms that the legacy path is no longer needed.
-
-Do not assign students unsupervised changes to authentication/session design, authorization, scoring/eligibility policy, protected-data filtering, model prompts, database migration history, worker concurrency, deployment, CI, or real candidate data. Those areas require explicit design review even when the code change appears small.
-
-## 16. Glossary and FAQ
+## 14. Glossary and FAQ
 
 ### Glossary
 
@@ -814,7 +753,7 @@ Do not assume one. Ask maintainers and verify remote branches before opening a P
 
 No direct deployment is part of the proposed student workflow. Use the authorized development/integration process and maintainer review.
 
-## 17. Architectural decisions
+## 15. Architectural decisions
 
 ### Verified decisions
 
