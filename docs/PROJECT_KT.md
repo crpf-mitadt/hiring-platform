@@ -58,7 +58,51 @@ Implemented scenarios include:
 - Optional or required introduction-video follow-up as a document upload/skip flow; no recording or video inference.
 - HR-only bulk screening against an existing approved job or an uploaded ad-hoc JD.
 
-Interview scheduling is represented in persistence and candidate-safe reads, but the staff scheduling workflow is not complete. The final-decision area is an audit-compatible foundation, not a complete selection/offer workflow.
+Interview scheduling is represented in persistence and a safe read helper, but it is not wired into candidate status and the staff scheduling workflow is not complete. The final-decision area is an audit-compatible foundation, not a complete selection/offer workflow.
+
+## Practical walkthrough: screening one Full Stack Developer applicant
+
+Use this example as the shortest path through the whole system.
+
+MIT-ADT creates a **Full Stack Developer** vacancy in the platform. HR uploads the JD, generates or enters a rubric, reviews it, approves a version, and publishes the job. This happens in `hiring-platform`: the UI calls the jobs API, [`services/jobs.py`](../apps/api/app/services/jobs.py) enforces the draft/approved-rubric/publish rules, and `Job`, `Document`, `JobRubric`, and `JobRubricVersion` preserve the job and frozen screening contract. In engine-provider mode, [`services/rubrics.py`](../apps/api/app/services/rubrics.py) invokes the engine's `scripts/extract_jd.py`; Gemma proposes a validated `StructuredJD`, but HR approval determines which version becomes current.
+
+A candidate opens the published vacancy and submits the application, resume, and required operational fields. [`App.vue`](../apps/web/src/App.vue) uses [`api/client.ts`](../apps/web/src/api/client.ts) to upload documents and call `POST /api/applications/public/jobs/{job_id}/apply`. [`submit_public_application`](../apps/api/app/services/applications.py) stores `Candidate` and `Application`, creates candidate-scoped continuation access, writes audit/history data, and calls [`enqueue_screening_run`](../apps/api/app/services/screening.py). The request returns after `ScreeningRun` and `ScreeningJob` are persisted; it does not wait for OCR or Gemma.
+
+The long-lived [`worker.py`](../apps/api/app/worker.py) later claims the queued job. With the default mock provider, tests receive deterministic synthetic output. With `HIRING_SCREENING_PROVIDER=engine`, `HiringScreeningEngineProvider` writes the already-approved `StructuredJD`, sends the resume PDF through the engine's Chandra OCR script, asks Gemma to structure the OCR result as a `CandidateProfile`, and invokes deterministic evaluation. The engine emits a versioned `CandidateEvaluationReport` with eligibility, criterion results, evidence references, experience, completeness, warnings, and a human-review requirement.
+
+Back in the platform, [`EngineEvaluationMapper`](../apps/api/app/services/engine_mapping.py) validates and persists the report as a `ScreeningRun`, `ScreeningCriterionResult`, and `ScreeningEvidence`. The worker moves the application to `SCREENING_REVIEW`. HR opens the screening dossier, inspects the evidence rather than only a score, and chooses shortlist, hold, or do not progress. [`transition_application`](../apps/api/app/services/workflow.py) validates that transition and writes remarks, stage history, an audit event, and a decision row. The model never makes the final hiring decision.
+
+```mermaid
+sequenceDiagram
+    participant HR as HR recruiter
+    participant Candidate as Candidate
+    participant Web as Vue / Frappe UI
+    participant API as Platform API
+    participant DB as PostgreSQL
+    participant Worker as Platform worker
+    participant Engine as Screening engine
+    participant Models as Chandra + Gemma
+    participant Reviewer as Human reviewer
+    HR->>Web: Create Full Stack Developer job and approve rubric
+    Web->>API: Job, JD, rubric, publish requests
+    API->>DB: Job + approved JobRubricVersion
+    Candidate->>Web: Submit application and resume
+    Web->>API: POST public application
+    API->>DB: Candidate + Application + ScreeningRun + ScreeningJob
+    API-->>Web: Candidate-safe continuation access
+    Worker->>DB: Claim pending ScreeningJob
+    Worker->>Engine: Approved StructuredJD + resume
+    Engine->>Models: Chandra OCR, then Gemma structuring
+    Models-->>Engine: OCR content + structured profile
+    Engine->>Engine: Deterministic eligibility, evidence, scoring
+    Engine-->>Worker: candidate-evaluation-v1
+    Worker->>DB: Persist run, criteria, evidence, history
+    Reviewer->>Web: Open screening dossier
+    Web->>API: Shortlist / hold / do not progress + remarks
+    API->>DB: Human decision + audit trail
+```
+
+The key boundary is visible here: the platform owns the recruitment record and orchestration; the engine owns document understanding and evidence-backed evaluation; HR owns consequential decisions.
 
 ## 2. Why two repositories?
 
@@ -179,88 +223,135 @@ Synchronous API work validates requests, stores documents/metadata, creates doma
 
 The current queue is implemented with database rows (`ScreeningJob` and `BulkScreeningWorkItem`), not Redis. A future queue implementation can replace the consumer while preserving provider/domain contracts.
 
-## 5. Complete application workflow
+## 5. Module-level knowledge transfer
 
-### Job and rubric
+This section maps each product area to its user behavior, implementation, APIs, persistence, dependencies, tests, and current limits. Use it to decide where a change belongs before editing code.
 
-1. Authorized staff create a draft `Job` linked to a `School`, `Department`, recruiter, hiring manager, and optional reviewers.
-2. Staff attach a JD document or reference.
-3. A human-created or provider-generated `JobRubricVersion` captures structured criteria and the source JD checksum.
-4. Staff approve a version. Approved payload identity is hashed and retained; changes create another version.
-5. A draft job can be published only with a current approved rubric. Legal job transitions are `DRAFT -> PUBLISHED -> CLOSED`.
+### Job management and rubric approval — implemented
 
-### Candidate application
+- **Purpose and user behavior:** HR/reviewers create vacancies, attach a JD, maintain draft data, generate or enter screening criteria, approve a rubric version, publish the job, and eventually close it. Public users see published jobs only.
+- **Internal implementation:** [`api/jobs.py`](../apps/api/app/api/jobs.py) exposes routes; [`services/jobs.py`](../apps/api/app/services/jobs.py) owns lifecycle and rubric approval rules; [`services/rubrics.py`](../apps/api/app/services/rubrics.py) provides mock and real-engine rubric generation. `App.vue` implements staff list/workspace and public job screens.
+- **APIs:** `/api/jobs`, `/api/jobs/{id}`, JD upload, generate/list rubric versions, rubric approval, publish/close, and read-only `/api/public/jobs` routes.
+- **Entities:** `School`, `Department`, `Job`, `JobReviewer`, `Document`, `JobRubric`, and `JobRubricVersion`.
+- **Dependencies and invariants:** publication requires a current approved version; an approved version records source JD/hash and approved-payload hash; a changed JD requires a new version. Legal status flow is `DRAFT -> PUBLISHED -> CLOSED`.
+- **Tests:** [`test_jobs_workflow.py`](../apps/api/app/tests/test_jobs_workflow.py) and rubric portions of [`test_development_seed_rubrics.py`](../apps/api/app/tests/test_development_seed_rubrics.py).
+- **Limitations:** only the three-state lifecycle is implemented. Live rubric generation depends on a configured engine/Gemma runtime; the default provider is mock.
 
-1. An anonymous candidate browses `PUBLISHED` jobs and submits the public form with a stored resume and photo document.
-2. The platform stores operational application data separately from `scoring_safe_payload`.
-3. It creates the candidate/application, audit event, stage history, configured assessment assignment/follow-up records, and an application-scoped continuation token.
-4. It transitions the application to `SCREENING_PENDING` and automatically creates a screening run/job.
-5. The one-time continuation token is exchanged for an HttpOnly application-scoped session. The candidate sees only candidate-safe application status and assessment/video follow-up. Interview scheduling is not yet wired into that candidate serializer.
+### Candidate application and continuation — implemented
 
-An authenticated candidate submission API also exists for candidate-role users, but public candidate registration is intentionally not exposed in the current product UI/API.
+- **Purpose and user behavior:** candidates browse public vacancies, submit the MIT-ADT application form and documents, receive an application-scoped continuation link, and continue assessment/video steps without a general candidate account.
+- **Internal implementation:** [`api/applications.py`](../apps/api/app/api/applications.py), [`services/applications.py`](../apps/api/app/services/applications.py), [`services/application_access.py`](../apps/api/app/services/application_access.py), [`services/documents.py`](../apps/api/app/services/documents.py), and the public/candidate routes in `App.vue`. [`services/scoring_projection.py`](../apps/api/app/services/scoring_projection.py) creates the platform-side safe projection.
+- **APIs:** public job reads; `/api/documents/public/resumes`; `/api/documents/public/photos`; `POST /api/applications/public/jobs/{job_id}/apply`; application-access exchange/status/assessment/video routes. An authenticated candidate-role submission route also exists.
+- **Entities:** `Candidate`, `Application`, `Document`, `ApplicationAccessToken`, `ApplicationAccessSession`, `ApplicationStageHistory`, plus configured assessment/follow-up records.
+- **Dependencies and invariants:** the job must be published; resume/photo documents must have the correct purpose; duplicate candidate/job applications are prevented; submission automatically queues screening. Operational PII and `scoring_safe_payload` remain separate.
+- **Tests:** [`test_public_application_flow.py`](../apps/api/app/tests/test_public_application_flow.py), [`test_document_storage.py`](../apps/api/app/tests/test_document_storage.py), and candidate-access tests in [`test_application_screening_permissions.py`](../apps/api/app/tests/test_application_screening_permissions.py).
+- **Limitations:** public candidate registration is intentionally absent. The candidate-safe status serializer currently does not return interview details, and the public form requires a photo even though photos never enter screening.
 
-### Screening and HR review
+### Staff authentication and permissions — implemented foundation
 
-```mermaid
-sequenceDiagram
-    participant C as Candidate
-    participant API as Platform API
-    participant DB as PostgreSQL
-    participant W as Worker
-    participant E as Screening engine
-    participant HR as HR reviewer
-    C->>API: Submit application + stored resume/photo IDs
-    API->>DB: Application, history, audit, ScreeningRun, ScreeningJob
-    API-->>C: Candidate-safe continuation URL
-    W->>DB: Poll pending job
-    W->>E: Approved StructuredJD + resume
-    E-->>W: candidate-evaluation-v1 artifact
-    W->>DB: Run, criteria, evidence, stage transitions
-    HR->>API: Open screening dossier
-    API-->>HR: Internal evidence and history
-    HR->>API: Shortlist / hold / do not progress + remarks
-    API->>DB: Stage history + audit + decision row
-```
+- **Purpose and user behavior:** authorized staff sign in, receive an HttpOnly session cookie, and access role-restricted recruitment screens/APIs. Candidates and anonymous users are blocked from staff screening data.
+- **Internal implementation:** [`api/auth.py`](../apps/api/app/api/auth.py), [`services/auth.py`](../apps/api/app/services/auth.py), [`api/deps.py`](../apps/api/app/api/deps.py), and [`core/security.py`](../apps/api/app/core/security.py). Passwords use PBKDF2-SHA256; only token hashes are stored.
+- **APIs:** `POST /api/auth/login`, `POST /api/auth/logout`, and `GET /api/auth/me`. Route/service checks additionally enforce recruiter/reviewer/admin role sets and candidate ownership.
+- **Entities:** `User`, `UserRole`, and `UserSession`; application-scoped sessions are separate.
+- **Dependencies and invariants:** frontend requests include credentials; cookie security depends on environment settings; the development `X-Actor-Id` path is test/development support and must not become product UI.
+- **Tests:** [`test_auth_boundaries.py`](../apps/api/app/tests/test_auth_boundaries.py) and permission tests across jobs, applications, and bulk screening.
+- **Limitations:** no university SSO/external identity provider is implemented. Interviewer/proctor roles exist, but their complete product permissions/workflows do not.
 
-Application screening stages are explicit: `APPLICATION_RECEIVED`, `SCREENING_PENDING`, `SCREENING_RUNNING`, `SCREENING_COMPLETE`, `SCREENING_REVIEW`, `SHORTLISTED_FOR_ASSESSMENT`, `SCREENING_HOLD`, and `NOT_PROGRESSED_AFTER_SCREENING`. Controllers call the centralized transition service; they do not write arbitrary stage strings.
+### Individual application screening — implemented with mock default
 
-### Assessment
+- **Purpose and user behavior:** every submitted application gets a historical screening run. Staff can inspect completed/failed runs and retry a failed run without overwriting it.
+- **Internal implementation:** [`services/screening.py`](../apps/api/app/services/screening.py) owns provider contracts, enqueue/idempotency, engine subprocess orchestration, retries, and job processing. [`worker.py`](../apps/api/app/worker.py) consumes pending work. [`engine_mapping.py`](../apps/api/app/services/engine_mapping.py) validates/maps the engine artifact.
+- **APIs:** application submission auto-enqueues; staff can list runs, explicitly create a run for controlled operations, retry a failed run, and fetch the screening dossier. `/api/screening-jobs/run-next` exists for controlled operations and is not product UI.
+- **Entities:** `ScreeningRun`, `ScreeningJob`, `ScreeningCriterionResult`, and `ScreeningEvidence`, linked to `Application`, the approved `JobRubricVersion`, and exact documents/hashes.
+- **Dependencies and invariants:** screening requires a stored resume and current approved rubric. OCR/model work never runs inline in the application request. A retry creates `retry_of_run_id`; positive engine scores must retain evidence through the engine contract.
+- **Tests:** [`test_screening_worker.py`](../apps/api/app/tests/test_screening_worker.py), [`test_engine_mapping.py`](../apps/api/app/tests/test_engine_mapping.py), [`test_screening_engine_provider_contract.py`](../apps/api/app/tests/test_screening_engine_provider_contract.py), and screening permission tests.
+- **Limitations:** `mock` is the default provider; live Chandra/Gemma remains environment validation. The current database claim query has no explicit multi-worker `FOR UPDATE SKIP LOCKED` design.
 
-When a published job references a published assessment-template version, public submission creates an assignment snapshot. Through application-scoped access, a candidate can start one attempt, submit selected options, and receive deterministic objective scoring. Assessment results are visible to staff but do not automatically change the recruitment stage or make a hiring decision.
+### Bulk screening — implemented
 
-Template/question models exist, and synthetic seed data provides demo templates. A complete staff assessment-authoring/queue UI and broad question types are not implemented.
+- **Purpose and user behavior:** HR screens many resume PDFs against an approved existing job or ad-hoc JD and receives exactly three evidence-backed queues: Meets Criteria, Needs Review, and Does Not Meet.
+- **Internal implementation:** [`api/bulk_screening.py`](../apps/api/app/api/bulk_screening.py), [`services/bulk_screening.py`](../apps/api/app/services/bulk_screening.py), bulk models/schemas, and [`BulkScreeningShowcase.vue`](../apps/web/src/components/BulkScreeningShowcase.vue). The same worker process consumes `BulkScreeningWorkItem` rows.
+- **APIs:** supported formats; batch list/read/export; existing-job and ad-hoc creation; simplified `/api/bulk-screening/simple`; criteria confirm/reconcile; resume upload; start/resume/archive/discard.
+- **Entities:** `BulkScreeningBatch`, `BulkScreeningItem`, `BulkScreeningWorkItem`, `BulkScreeningCriterionResult`, and `BulkScreeningEvidence`, plus referenced jobs/rubrics/documents/audits.
+- **Dependencies and invariants:** PDF page count is server-validated with `pypdf` (1–4 accepted); ZIP safety/deduplication run before queueing; technical/incomplete cases map to `NEEDS_REVIEW`; bulk responses/CSV intentionally omit numeric scores; names/filenames cannot drive classification.
+- **Tests:** the synthetic suite in [`test_bulk_screening.py`](../apps/api/app/tests/test_bulk_screening.py) covers access, uploads, parser validation, ZIP safety, queueing, progress, classification, retries, evidence, and lifecycle.
+- **Limitations:** normal HR resume input is PDF only. The frontend still has an unreliable marker-based page precheck even though the server is authoritative, and dead legacy bulk markup remains gated off in `App.vue`.
 
-### Optional introduction video
+### Assessments — partial
 
-Jobs have `NONE`, `OPTIONAL`, or `REQUIRED` introduction-video modes. Follow-up records and candidate upload/skip APIs exist. The platform stores document/status metadata only: it does not record video in-browser and does not infer appearance, accent, emotion, or personality.
+- **Purpose and user behavior:** a configured job automatically assigns a versioned objective assessment. A candidate can start/submit through application-scoped access; staff can see the result in the application workspace.
+- **Internal implementation:** [`models/assessment.py`](../apps/api/app/models/assessment.py), [`services/assessments.py`](../apps/api/app/services/assessments.py), assessment schemas, application-access routes, and the candidate continuation/application workspace sections in `App.vue`.
+- **APIs:** get application assessment, start assignment attempt, and submit attempt responses. There is no general staff assessment-management API.
+- **Entities:** `AssessmentTemplate`, `AssessmentTemplateVersion`, `AssessmentQuestion`, `AssessmentOption`, `AssessmentAssignment`, `AssessmentAttempt`, `AssessmentResponse`, and `AssessmentResult`.
+- **Dependencies and invariants:** jobs reference a template version; assignments snapshot version metadata; objective scoring is deterministic; a submitted result does not automatically shortlist or reject.
+- **Tests:** assessment scenarios in [`test_public_application_flow.py`](../apps/api/app/tests/test_public_application_flow.py) and synthetic template setup in seed tests.
+- **Limitations:** staff authoring/publishing/queue screens are not complete, the standalone Assessments route is informational, and broad question/assessment types are not implemented.
 
-### Interview and final review
+### Introduction video — partial
 
-`InterviewSchedule` persistence and a safe read helper exist, and staff application workspaces display interview status. The candidate status serializer currently returns no interview record. The standalone staff interview page is informational; scheduling APIs/workflows, panel feedback, recording, transcription, and AI summaries are not complete.
+- **Purpose and user behavior:** jobs may request no, optional, or required candidate introduction video; candidate continuation supports upload or skip and staff sees status.
+- **Internal implementation:** `IntroVideoMode` on `Job`, [`models/followup.py`](../apps/api/app/models/followup.py), [`services/followup.py`](../apps/api/app/services/followup.py), application-access upload/skip routes, and candidate/staff UI sections.
+- **APIs:** `POST /api/applications/application-access/intro-video` and `/intro-video/skip`.
+- **Entities:** `ApplicationIntroVideo` and a `Document` with introduction-video purpose.
+- **Dependencies and invariants:** access is scoped to one application; the job mode must not be `NONE`; video is operational follow-up and never scoring input.
+- **Tests:** video/application continuation coverage in [`test_public_application_flow.py`](../apps/api/app/tests/test_public_application_flow.py).
+- **Limitations:** no recording, transcoding, playback workflow, analysis, or AI inference exists. The current skip service permits skipping both `OPTIONAL` and `REQUIRED` modes, so required-mode enforcement is incomplete.
 
-Screening review can write audit-compatible `HiringDecision` rows for shortlist/hold/not-progress actions. The final-decisions page remains a placeholder; complete selected/not-selected/another-round and offer workflows are future work.
+### Human screening review — implemented
 
-### Bulk screening
+- **Purpose and user behavior:** authorized staff inspect candidate/application data, run history, criterion evidence, warnings, assessment/video status, and then shortlist for assessment, hold, or do not progress with mandatory remarks.
+- **Internal implementation:** application list/dossier routes, `App.vue` application workspace, [`services/application_access.py`](../apps/api/app/services/application_access.py) for candidate isolation, and [`services/workflow.py`](../apps/api/app/services/workflow.py) for the state machine and governance records.
+- **APIs:** staff application list/read, screening runs/dossier, and `/{application_id}/shortlist`, `/hold`, `/do-not-progress`.
+- **Entities:** `Application`, `ApplicationStageHistory`, `HiringDecision`, `AuditEvent`, and related screening/assessment/follow-up records.
+- **Dependencies and invariants:** only legal transitions are accepted; consequential human transitions require remarks; candidate-safe APIs exclude internal score/evidence/remarks and other candidates.
+- **Tests:** workflow/permission cases in [`test_application_screening_permissions.py`](../apps/api/app/tests/test_application_screening_permissions.py) and auth boundary tests.
+- **Limitations:** these actions govern post-screening progression, not a complete final selection/offer workflow.
 
-1. Authorized HR/reviewer/admin staff choose an existing published job with an approved rubric, or upload an ad-hoc JD.
-2. Ad-hoc JD structuring creates a persisted StructuredJD/criteria snapshot. The full multi-step service supports explicit criteria confirmation; the simplified UI submits JD and resumes together through `/api/bulk-screening/simple`.
-3. Resume PDFs are validated with `pypdf`; readable 1–4 page files are accepted. Unreadable/encrypted/5+ page PDFs are rejected before work-item creation.
-4. ZIP safety checks block traversal, absolute paths, symlinks, nested archives, corrupt archives, and configured size/file limits. Content hashes identify duplicates.
-5. Starting creates one persisted work item per valid unique resume. The same continuous worker consumes bulk and individual queues.
-6. Results persist criterion/evidence records and map to exactly `MEETS_CRITERIA`, `NEEDS_REVIEW`, or `DOES_NOT_MEET_CRITERIA`. A hard fail requires verified hard-gate evidence; technical/ambiguous/incomplete cases become `NEEDS_REVIEW`.
-7. The approved showcase UI displays concise reasons and classifications without numeric rankings. HR still owns every consequential decision.
+### Interviews — partial foundation
+
+- **Purpose and user behavior:** the application workspace can display whether an interview is scheduled and related instructions/status metadata.
+- **Internal implementation:** `InterviewSchedule`/`InterviewStatus` in [`models/followup.py`](../apps/api/app/models/followup.py), helper reads in [`services/followup.py`](../apps/api/app/services/followup.py), and an application-workspace tab.
+- **APIs:** no dedicated staff scheduling API is currently registered. Candidate status currently returns no interview record despite the safe helper.
+- **Entities:** `InterviewSchedule` linked one-to-one with `Application`.
+- **Dependencies and invariants:** interview information is recruitment workflow data and must remain separate from screening score/evidence.
+- **Tests:** current public-flow tests create/read follow-up foundations but do not establish a complete scheduling workflow.
+- **Limitations:** staff queue/scheduling, participants, rounds, rubrics, panel feedback, recording, transcription, and AI summary are not implemented.
+
+### Final decisions — partial foundation
+
+- **Purpose and user behavior:** retain who made a consequential decision, when, and why; preserve human ownership of hiring outcomes.
+- **Internal implementation:** `HiringDecision` and `HiringDecisionType` in [`models/recruitment.py`](../apps/api/app/models/recruitment.py), records created by [`transition_application`](../apps/api/app/services/workflow.py), dossier history, and an informational Final Decisions route.
+- **APIs:** shortlist/hold/do-not-progress create current decision rows through workflow endpoints. There is no complete final-decision route group.
+- **Entities:** `HiringDecision`, `ApplicationStageHistory`, and `AuditEvent`.
+- **Dependencies and invariants:** actor/timestamp/mandatory remarks are preserved; AI, assessment, and proctoring outputs cannot make the final decision.
+- **Tests:** human-decision remarks and invalid-transition cases in [`test_application_screening_permissions.py`](../apps/api/app/tests/test_application_screening_permissions.py).
+- **Limitations:** selected/not-selected/another-round orchestration, panel sign-off, offers, and onboarding are not complete product workflows.
 
 ## 6. AI screening pipeline
 
 ### Engine stages
 
-1. **JD ingestion**: [`jd_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ingestion/jd_document.py) reads supported source documents.
-2. **JD structuring**: [`jd_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/jd_structuring.py) calls Gemma (or a test mock), validates `StructuredJD`, and applies deterministic rubric post-processing.
-3. **Resume OCR**: [`full_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ocr/full_document.py) renders/processes pages with Chandra and records completion/source-map metadata.
-4. **Resume structuring**: [`resume_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/resume_structuring.py) turns OCR into `CandidateProfile`, normalizes dates, and validates/repairs model JSON.
-5. **Safety projection**: [`candidate_sanitizer.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/safety/candidate_sanitizer.py) produces the scoring-safe profile. Personal information is not an input to scoring.
-6. **Eligibility and deterministic evaluation**: [`engine.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/engine.py) constructs independently classified components, matches evidence, computes discrete fractions, weighted totals, experience, and completeness, and applies gates.
-7. **Artifact/reporting**: [`evaluation.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/evaluation.py) defines `candidate-evaluation-v1`; report writers project that canonical artifact to JSON/CSV/HTML.
+The canonical data path is:
+
+```text
+JD source -> StructuredJD
+resume PDF -> Chandra OCR -> CandidateProfile -> ScoringSafeProfile
+StructuredJD + ScoringSafeProfile -> eligibility + criteria + evidence
+-> CandidateEvaluationReport -> platform persistence -> HR review
+```
+
+| Stage | What happens | AI or deterministic? | Primary engine entry points | Output used next |
+| --- | --- | --- | --- | --- |
+| JD ingestion | TXT/MD/DOCX/embedded-text PDF content is read; scanned PDF fallback can use OCR through the full workflow. | Deterministic parsing; Chandra only for scanned fallback | [`ingestion/jd_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ingestion/jd_document.py), `scripts/extract_jd.py` | Normalized JD text/source identity |
+| JD structuring | Requirements, skills, minimum experience, and linked rubric criteria are proposed and schema-validated. Deterministic post-processing corrects required/preferred classification and emits grounding warnings. | Gemma extraction plus deterministic validation/post-processing | [`pipeline/jd_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/jd_structuring.py), [`schemas/jd.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/jd.py) | `StructuredJD` (`structured-jd-v1`) |
+| Resume extraction | Each PDF page is rendered, sent to Chandra, and recorded with page/block source maps, completion, truncation, and failure metadata. | Chandra OCR plus deterministic artifact handling | [`ocr/full_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ocr/full_document.py), `scripts/run_full_resume_ocr.py` | OCR document, metadata, source map |
+| Resume structuring | OCR content becomes education, experience, skills, projects, publications, and provenance. Invalid JSON/schema output has bounded repair paths; date recovery/normalization follows. | Gemma extraction plus deterministic validation/date recovery | [`pipeline/resume_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/resume_structuring.py), [`schemas/resume.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/resume.py), `scripts/structure_resume.py` | `CandidateProfile` (`candidate-profile-v1`) |
+| Safety projection | Personal information is excluded while job-relevant evidence/provenance is retained. | Deterministic Python | [`safety/candidate_sanitizer.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/safety/candidate_sanitizer.py), `ScoringSafeProfile` schema | `ScoringSafeProfile` (`scoring-safe-profile-v1`) |
+| Eligibility and criteria | Mandatory gates, linked requirements, required/preferred/adjacent components, degree/experience rules, and evidence matches are evaluated. Experience intervals are normalized/merged and uncertainty is retained. | Deterministic Python; no model owns the score | [`scoring/eligibility.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/eligibility.py), [`scoring/engine.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/engine.py), experience/evidence modules | `EligibilityResult` + `CriterionEvaluation[]` |
+| Evidence and scoring reconciliation | Evidence is deduplicated by document/page/block/text identity; discrete match fractions, weights, completeness, gates, warnings, strengths, and gaps are reconciled and invariant-checked. | Deterministic Python | scoring modules and `scripts/validate_evaluation_invariants.py` | Validated evaluation fields |
+| Evaluation report | The canonical artifact records schema/scoring versions, eligibility, criteria, evidence, experience, completeness, and `human_review_required`. JSON/CSV/HTML are projections of it. | Deterministic serialization/reporting | [`schemas/evaluation.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/evaluation.py), `pipeline/candidate_evaluation.py`, `reports/` | `CandidateEvaluationReport` (`candidate-evaluation-v1`) |
+
+The standalone `chandra-eval match` command orchestrates all stages through `pipeline/match_workflow.py`. The platform adapter deliberately takes a narrower route: rubric generation may call `extract_jd.py`, but an application screening run reuses the human-approved `StructuredJD` and calls resume OCR, resume structuring, and `evaluate_candidate.py`. This prevents a screening run from silently replacing the approved rubric.
 
 ### Important concepts
 
@@ -637,50 +728,35 @@ Only source-evidenced items are listed.
 | `App.vue` retains legacy bulk/showcase markup behind computed values that always return `false`. | Large dead paths make maintenance and route reasoning harder. | Platform frontend | `showcaseLegacyVisible`, `bulkLegacyVisible`, and guarded template blocks in `App.vue`. |
 | `BulkScreeningShowcase.vue` has a client-side `/Type /Page` text-marker precheck, while the server now uses `pypdf`. | The browser precheck can miscount some valid PDFs before the authoritative server validator sees them. | Platform frontend upload UX | `clientPdfPageCount`; remove or replace in a separately tested functional change. |
 | `candidate_safe_status` always returns `interview: None` even after follow-up reads are loaded. | Candidates cannot currently receive scheduled interview details through the application-scoped status response. | Platform candidate follow-up | `services/applications.py`, `services/followup.py`, and candidate-safe contract tests. |
+| `skip_intro_video` blocks only `IntroVideoMode.NONE`, so `REQUIRED` video can currently be skipped. | The persisted job mode does not enforce required candidate submission. | Platform candidate follow-up | `services/followup.py` and public-flow tests; define product behavior before changing it. |
 | `core/security.py` states that non-development actor providers are not implemented. | Production identity integration beyond password sessions/development actor fallback is incomplete. | Platform authentication | `get_actor`, settings, and deployment threat model. |
 | Staff Assessments, Interviews, and Final Decisions routes render informational alerts rather than complete queues. | Navigation can imply more workflow depth than currently exists. | Platform frontend/product | Bottom of `App.vue`, corresponding models/services, status table above. |
 
-## 15. New contributor learning path
+## 15. Contributor orientation
 
-### Shared first week
+Choose work by ownership boundary, not by which language looks familiar. Each change should have a named maintainer/lead reviewer before implementation.
 
-**Day 1 — orient and clone**
+| Contribution area | Repository and files to inspect first | Relevant tests | Contracts not to break | Maintainer review required when |
+| --- | --- | --- | --- | --- |
+| Public/staff UI behavior | Platform: `apps/web/src/App.vue`, `api/client.ts`, `api/types.ts`, `BulkScreeningShowcase.vue` | `App.test.ts`, `client.test.ts`, `design-conformance.test.ts` | Frappe UI public API, candidate-safe/staff-only separation, relative `/api` and cookie behavior, three bulk classifications | changing routes, API payloads, candidate visibility, or consequential actions |
+| Recruitment API/service behavior | Platform: matching `api/`, `schemas/`, `services/`, and `models/` files | focused pytest module plus full backend suite | route authorization, service-owned lifecycle rules, Pydantic response shape, audit/history creation | changing schema, permissions, migrations, application/job stages, or document policy |
+| Worker/provider orchestration | Platform: `worker.py`, `services/screening.py`, `services/bulk_screening.py`, `engine_mapping.py` | worker, provider-contract, mapper, and bulk tests | non-blocking API boundary, idempotency, immutable reruns, safe failures, engine artifact version | changing retries, queue claims, subprocess/environment contract, or failure classification |
+| Engine ingestion and structuring | Engine: `ingestion/`, `ocr/`, `llm/`, `pipeline/jd_structuring.py`, `pipeline/resume_structuring.py` | JD ingestion/structuring, OCR coverage/artifacts, resume structuring, LLM response tests | source provenance, bounded repair, no raw private output by default, strict schema versions | changing prompts, model settings, OCR completeness rules, or persisted artifacts |
+| Deterministic evaluation and reports | Engine: `schemas/`, `scoring/`, `reports/`, scoring-invariant docs | scoring correctness, invariant validator, report contract, safety/date regressions | approved discrete fractions, evidence-required positive scores, component/source classification, human-review requirement | always; scoring policy, eligibility, equivalence, privacy, and report semantics are lead-owned |
+| QA and cross-repository contracts | Both: platform engine fixtures/mapper tests plus engine synthetic fixtures/acceptance scripts | both repositories' offline suites | fixture privacy, `StructuredJD` and `candidate-evaluation-v1` compatibility, mocked-vs-live reporting | changing a shared artifact, adding sanitized regression data, or proposing live AI validation |
 
-- Read this guide and both READMEs.
-- Clone both sibling repositories, inspect branches, and read `git status` before changing anything.
-- Draw the platform/engine boundary in your own words.
+### Safe starter tasks
 
-**Day 2 — follow the data**
+The project lead should select and scope one of these; they do not require GPU access or server credentials.
 
-- Frontend: trace one `api/client.ts` call into a FastAPI route.
-- Backend: trace `submit_public_application` through persistence and enqueue.
-- Engine: compare `StructuredJD`, `CandidateProfile`, `ScoringSafeProfile`, and `CandidateEvaluationReport`.
+- Add a focused frontend regression for an existing loading, empty, or safe-error state without changing API contracts.
+- Improve a project-specific documentation cross-link or module explanation after verifying the referenced source and test.
+- Add a synthetic report-rendering regression in the engine for an already-supported `CandidateEvaluationReport` shape without changing scoring policy.
+- Add a platform mapper test for an already-supported warning/evidence field using sanitized JSON fixtures.
+- Add test coverage that exposes an existing documented limitation before a maintainer-approved fix, such as candidate interview serialization or browser/server PDF page-count disagreement.
+- Remove a small unreachable frontend fragment only when existing behavior is covered and the lead confirms that the legacy path is no longer needed.
 
-**Day 3 — run safe tests**
-
-- In an authorized environment, run unit tests for your track using synthetic fixtures.
-- Read a passing test and intentionally identify the behavior it protects.
-- Do not configure GPU endpoints or use private candidate files.
-
-**Day 4 — trace one full feature**
-
-- Follow application screening from API -> queue -> worker -> provider -> mapper -> dossier.
-- Or follow bulk screening from upload validation -> work item -> classification -> UI column.
-- Note which repository owns each transformation.
-
-**Day 5 — contribute**
-
-- Choose a small documented issue.
-- Add a failing synthetic test, make the smallest fix, run permitted checks, and open a PR with scope/evidence.
-
-### Track-specific focus
-
-- **Frontend student:** Frappe UI public API, semantic tokens, `App.vue` route/path logic, typed API client, candidate-safe versus staff-only views, Vitest mocks.
-- **Platform backend student:** FastAPI dependencies, SQLAlchemy relationships, Alembic, centralized workflow rules, provider protocols, permission tests.
-- **AI engine student:** strict schemas, OCR source maps, prompts/response repair, scoring-safe profile, deterministic component/evidence invariants. Start with synthetic artifacts, not live models.
-- **QA/integration student:** state-transition matrices, API schema boundaries, migration chain, worker retry/failure cases, platform mapper fixtures, and explicit separation of mock versus live validation.
-
-None of these tracks requires GPU access or server credentials during onboarding.
+Do not assign students unsupervised changes to authentication/session design, authorization, scoring/eligibility policy, protected-data filtering, model prompts, database migration history, worker concurrency, deployment, CI, or real candidate data. Those areas require explicit design review even when the code change appears small.
 
 ## 16. Glossary and FAQ
 
@@ -696,10 +772,9 @@ None of these tracks requires GPU access or server credentials during onboarding
 - **Worker:** Long-lived process that consumes queued screening jobs outside API requests.
 - **Queue:** Persisted database rows representing pending/running/completed/failed work.
 - **Migration:** Ordered Alembic code that evolves the PostgreSQL schema.
-- **API:** HTTP contract between the frontend and FastAPI, and the artifact/subprocess contract between platform and engine.
-- **Role-based access:** Permission decisions based on assigned roles plus ownership/scope checks.
-- **CI/CD:** Automated checks and delivery. CI rules described here are proposed because no workflows are currently tracked.
-- **PR:** Pull request used to review and merge a branch safely.
+- **Platform API:** The `/api` HTTP contract used by the Vue application; Pydantic schemas define its request/response shapes.
+- **Engine contract:** The subprocess/environment and versioned artifact boundary by which the platform invokes the sibling engine.
+- **Role-based access:** Platform permissions based on the six role values plus candidate/application ownership checks.
 
 ### FAQ
 
