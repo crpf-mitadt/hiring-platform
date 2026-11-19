@@ -42,6 +42,8 @@ jobs:
   backend-tests:
     name: backend-tests
     runs-on: ubuntu-latest
+    env:
+      HIRING_SCREENING_ENGINE_ROOT: apps/api/app/tests/fixtures/engine_contract
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

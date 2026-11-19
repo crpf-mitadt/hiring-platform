@@ -109,7 +109,7 @@ def _payload_text(payload: dict) -> str:
 
 
 def _engine_structured_jd_model():
-    engine_src = (Path(__file__).resolve().parents[5] / "hiring-screening-engine" / "src").resolve()
+    engine_src = (Path(get_settings().screening_engine_root).expanduser().resolve() / "src").resolve()
     if str(engine_src) not in sys.path:
         sys.path.insert(0, str(engine_src))
     from chandra_eval.schemas.jd import StructuredJD
