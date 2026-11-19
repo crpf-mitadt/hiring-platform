@@ -97,7 +97,7 @@ The key boundary is visible here: the platform owns the recruitment record and o
 
 ### `hiring-platform`
 
-[`hiring-platform`](https://github.com/danishsshaikh/hiring-platform) is the product application. It owns:
+[`hiring-platform`](https://github.com/crpf-mitadt/hiring-platform) is the product application. It owns:
 
 - Vue 3/Frappe UI screens and browser API client.
 - FastAPI routes, staff and application-scoped authentication, authorization, and error responses.
@@ -108,7 +108,7 @@ The key boundary is visible here: the platform owns the recruitment record and o
 
 ### `hiring-screening-engine`
 
-[`hiring-screening-engine`](https://github.com/danishsshaikh/hiring-screening-engine) is a specialized Python evaluation pipeline. It owns:
+[`hiring-screening-engine`](https://github.com/crpf-mitadt/hiring-screening-engine) is a specialized Python evaluation pipeline. It owns:
 
 - JD and resume ingestion.
 - Chandra OCR calls and OCR artifacts.
@@ -325,14 +325,14 @@ StructuredJD + ScoringSafeProfile -> eligibility + criteria + evidence
 
 | Stage | What happens | AI or deterministic? | Primary engine entry points | Output used next |
 | --- | --- | --- | --- | --- |
-| JD ingestion | TXT/MD/DOCX/embedded-text PDF content is read; scanned PDF fallback can use OCR through the full workflow. | Deterministic parsing; Chandra only for scanned fallback | [`ingestion/jd_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ingestion/jd_document.py), `scripts/extract_jd.py` | Normalized JD text/source identity |
-| JD structuring | Requirements, skills, minimum experience, and linked rubric criteria are proposed and schema-validated. Deterministic post-processing corrects required/preferred classification and emits grounding warnings. | Gemma extraction plus deterministic validation/post-processing | [`pipeline/jd_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/jd_structuring.py), [`schemas/jd.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/jd.py) | `StructuredJD` (`structured-jd-v1`) |
-| Resume extraction | Each PDF page is rendered, sent to Chandra, and recorded with page/block source maps, completion, truncation, and failure metadata. | Chandra OCR plus deterministic artifact handling | [`ocr/full_document.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ocr/full_document.py), `scripts/run_full_resume_ocr.py` | OCR document, metadata, source map |
-| Resume structuring | OCR content becomes education, experience, skills, projects, publications, and provenance. Invalid JSON/schema output has bounded repair paths; date recovery/normalization follows. | Gemma extraction plus deterministic validation/date recovery | [`pipeline/resume_structuring.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/resume_structuring.py), [`schemas/resume.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/resume.py), `scripts/structure_resume.py` | `CandidateProfile` (`candidate-profile-v1`) |
-| Safety projection | Personal information is excluded while job-relevant evidence/provenance is retained. | Deterministic Python | [`safety/candidate_sanitizer.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/safety/candidate_sanitizer.py), `ScoringSafeProfile` schema | `ScoringSafeProfile` (`scoring-safe-profile-v1`) |
-| Eligibility and criteria | Mandatory gates, linked requirements, required/preferred/adjacent components, degree/experience rules, and evidence matches are evaluated. Experience intervals are normalized/merged and uncertainty is retained. | Deterministic Python; no model owns the score | [`scoring/eligibility.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/eligibility.py), [`scoring/engine.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/engine.py), experience/evidence modules | `EligibilityResult` + `CriterionEvaluation[]` |
+| JD ingestion | TXT/MD/DOCX/embedded-text PDF content is read; scanned PDF fallback can use OCR through the full workflow. | Deterministic parsing; Chandra only for scanned fallback | [`ingestion/jd_document.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ingestion/jd_document.py), `scripts/extract_jd.py` | Normalized JD text/source identity |
+| JD structuring | Requirements, skills, minimum experience, and linked rubric criteria are proposed and schema-validated. Deterministic post-processing corrects required/preferred classification and emits grounding warnings. | Gemma extraction plus deterministic validation/post-processing | [`pipeline/jd_structuring.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/jd_structuring.py), [`schemas/jd.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/jd.py) | `StructuredJD` (`structured-jd-v1`) |
+| Resume extraction | Each PDF page is rendered, sent to Chandra, and recorded with page/block source maps, completion, truncation, and failure metadata. | Chandra OCR plus deterministic artifact handling | [`ocr/full_document.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/ocr/full_document.py), `scripts/run_full_resume_ocr.py` | OCR document, metadata, source map |
+| Resume structuring | OCR content becomes education, experience, skills, projects, publications, and provenance. Invalid JSON/schema output has bounded repair paths; date recovery/normalization follows. | Gemma extraction plus deterministic validation/date recovery | [`pipeline/resume_structuring.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/pipeline/resume_structuring.py), [`schemas/resume.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/resume.py), `scripts/structure_resume.py` | `CandidateProfile` (`candidate-profile-v1`) |
+| Safety projection | Personal information is excluded while job-relevant evidence/provenance is retained. | Deterministic Python | [`safety/candidate_sanitizer.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/safety/candidate_sanitizer.py), `ScoringSafeProfile` schema | `ScoringSafeProfile` (`scoring-safe-profile-v1`) |
+| Eligibility and criteria | Mandatory gates, linked requirements, required/preferred/adjacent components, degree/experience rules, and evidence matches are evaluated. Experience intervals are normalized/merged and uncertainty is retained. | Deterministic Python; no model owns the score | [`scoring/eligibility.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/eligibility.py), [`scoring/engine.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/scoring/engine.py), experience/evidence modules | `EligibilityResult` + `CriterionEvaluation[]` |
 | Evidence and scoring reconciliation | Evidence is deduplicated by document/page/block/text identity; discrete match fractions, weights, completeness, gates, warnings, strengths, and gaps are reconciled and invariant-checked. | Deterministic Python | scoring modules and `scripts/validate_evaluation_invariants.py` | Validated evaluation fields |
-| Evaluation report | The canonical artifact records schema/scoring versions, eligibility, criteria, evidence, experience, completeness, and `human_review_required`. JSON/CSV/HTML are projections of it. | Deterministic serialization/reporting | [`schemas/evaluation.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/evaluation.py), `pipeline/candidate_evaluation.py`, `reports/` | `CandidateEvaluationReport` (`candidate-evaluation-v1`) |
+| Evaluation report | The canonical artifact records schema/scoring versions, eligibility, criteria, evidence, experience, completeness, and `human_review_required`. JSON/CSV/HTML are projections of it. | Deterministic serialization/reporting | [`schemas/evaluation.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/schemas/evaluation.py), `pipeline/candidate_evaluation.py`, `reports/` | `CandidateEvaluationReport` (`candidate-evaluation-v1`) |
 
 The standalone `chandra-eval match` command orchestrates all stages through `pipeline/match_workflow.py`. The platform adapter deliberately takes a narrower route: rubric generation may call `extract_jd.py`, but an application screening run reuses the human-approved `StructuredJD` and calls resume OCR, resume structuring, and `evaluate_candidate.py`. This prevents a screening run from silently replacing the approved rubric.
 
@@ -433,7 +433,7 @@ hiring-screening-engine/
 └── uv.lock              reproducible dependency lock
 ```
 
-Start with the engine's [`docs/system-architecture.md`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/system-architecture.md) and [`docs/scoring-invariants.md`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/scoring-invariants.md). Trace a full run from [`cli.py`](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/cli.py) into `pipeline/match_workflow.py`, then the structuring and scoring files described above.
+Start with the engine's [`docs/system-architecture.md`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/system-architecture.md) and [`docs/scoring-invariants.md`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/scoring-invariants.md). Trace a full run from [`cli.py`](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/src/chandra_eval/cli.py) into `pipeline/match_workflow.py`, then the structuring and scoring files described above.
 
 ## 8. Data model and APIs
 
@@ -519,8 +519,8 @@ For exact request/response fields, use [`schemas/jobs.py`](../apps/api/app/schem
 ```bash
 mkdir -p ~/Documents/MIT-ADT/Server/Hiring
 cd ~/Documents/MIT-ADT/Server/Hiring
-git clone https://github.com/danishsshaikh/hiring-platform.git
-git clone https://github.com/danishsshaikh/hiring-screening-engine.git
+git clone https://github.com/crpf-mitadt/hiring-platform.git
+git clone https://github.com/crpf-mitadt/hiring-screening-engine.git
 ```
 
 Ask the maintainer which feature/integration branch to use; do not assume `develop` exists. Never put a `.git` repository around the parent `Hiring/` directory.
@@ -787,8 +787,8 @@ Platform documentation:
 
 Engine documentation:
 
-- [System architecture](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/system-architecture.md)
-- [Scoring invariants](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/scoring-invariants.md)
-- [Privacy and fairness](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/privacy-and-fairness.md)
-- [Pipeline runbook](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/pipeline-runbook.md)
-- [Phase 1 acceptance](https://github.com/danishsshaikh/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/phase1-acceptance.md)
+- [System architecture](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/system-architecture.md)
+- [Scoring invariants](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/scoring-invariants.md)
+- [Privacy and fairness](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/privacy-and-fairness.md)
+- [Pipeline runbook](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/pipeline-runbook.md)
+- [Phase 1 acceptance](https://github.com/crpf-mitadt/hiring-screening-engine/blob/3162575b1a15ecdb53b354da927c78340062f94c/docs/phase1-acceptance.md)

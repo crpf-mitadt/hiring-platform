@@ -12,7 +12,7 @@ jobs. New contributors should start with the canonical cross-repository
 
 The specialized OCR, structured extraction, deterministic evaluation, and
 reporting pipeline lives in the sibling
-[`hiring-screening-engine`](https://github.com/danishsshaikh/hiring-screening-engine)
+[`hiring-screening-engine`](https://github.com/crpf-mitadt/hiring-screening-engine)
 repository. The KT explains the contract between the two repositories, safe
 setup/testing paths, current implementation status, and contribution workflow.
 

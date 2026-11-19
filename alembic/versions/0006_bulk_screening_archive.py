@@ -37,7 +37,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(op.f("ix_bulk_screening_batches_archived_by_id"), table_name="bulk_screening_batches")
     op.drop_index(op.f("ix_bulk_screening_batches_archived_at"), table_name="bulk_screening_batches")
-    op.drop_constraint(op.f("fk_bulk_screening_batches_archived_by_id_users"), "bulk_screening_batches", type_="foreignkey")
+    op.drop_constraint(
+        op.f("fk_bulk_screening_batches_archived_by_id_users"),
+        "bulk_screening_batches",
+        type_="foreignkey",
+    )
     op.drop_column("bulk_screening_batches", "archived_by_id")
     op.drop_column("bulk_screening_batches", "archived_at")
     op.drop_column("bulk_screening_batches", "failure_message")
