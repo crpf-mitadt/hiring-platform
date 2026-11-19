@@ -1,5 +1,26 @@
 # MIT-ADT AI Hiring Project: Knowledge Transfer and Developer Onboarding
 
+## Protected contribution model
+
+Both repositories use the same protected two-branch model:
+
+1. `main` is the stable release baseline; `develop` is the integration branch.
+2. An approved student is added to the `Student Contributors` team and branches
+   from `develop` as `student/<username>/<feature>`.
+3. The student opens a pull request into `develop`. GitHub-hosted CI runs the
+   repository's required test, lint, acceptance, and integrity checks.
+4. Review conversations must be resolved and the project lead must approve as
+   CODEOWNER before the authorized maintainer merges.
+5. A release uses a reviewed `develop`-to-`main` pull request with the same CI
+   and review controls.
+
+Contributors cannot directly update, force-push, or delete `main` or `develop`.
+Cross-repository work uses paired pull requests that link each other and state
+contract compatibility and merge order. The platform requires `frontend-tests`,
+`backend-tests`, and `repository-integrity`; the engine requires
+`engine-unit-tests`, `engine-lint`, `engine-phase1-acceptance`, and
+`repository-integrity`.
+
 This is the canonical onboarding guide for the two repositories that make up the MIT-ADT AI Hiring project. It is written for contributors who have not seen the project before. Read it before changing either repository.
 
 ## 1. Project overview
