@@ -16,6 +16,22 @@ reporting pipeline lives in the sibling
 repository. The KT explains the contract between the two repositories, safe
 setup/testing paths, current implementation status, and contribution workflow.
 
+## Collaboration workflow
+
+`main` is the protected release baseline. `develop` is the protected integration
+branch for reviewed student work. Approved students receive repository write
+access through the `Student Contributors` team, then create a task-specific
+`student/<username>/<feature>` branch from `develop` and open a pull request back
+to `develop`.
+
+Platform pull requests must pass `frontend-tests`, `backend-tests`, and
+`repository-integrity`, resolve review conversations, and receive project-lead
+CODEOWNERS approval. Only the authorized maintainer merges protected branches;
+direct pushes, force pushes, and deletion are blocked for contributors. Releases
+move from `develop` to `main` through another reviewed, passing pull request.
+Changes that affect the screening contract must link the paired engine pull
+request and state any required merge order.
+
 This foundation milestone includes:
 
 - FastAPI backend in `apps/api`.
