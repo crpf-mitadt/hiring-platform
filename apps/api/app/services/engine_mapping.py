@@ -122,4 +122,3 @@ def _unmatched_terms(component_assessment: dict[str, Any]) -> list[str]:
 
 def _file_sha256(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
-

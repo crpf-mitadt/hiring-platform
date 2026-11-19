@@ -13,4 +13,3 @@ def rubric_payload_hash(version: Any) -> str:
         "version_number": version.version_number,
     }
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-
