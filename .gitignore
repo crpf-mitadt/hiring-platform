@@ -2,6 +2,12 @@
 .env
 .env.*
 !.env.example
+.env.local
+.env.tyrone
+.env.tyrone.local
+.env.phase2-*
+.local/
+.local-notes/
 .venv*/
 *.egg-info/
 __pycache__/
@@ -18,6 +24,9 @@ apps/web/.vite/
 apps/web/auto-imports.d.ts
 apps/web/components.d.ts
 *.log
+.hiring-documents/
+storage/
+screening-output/
 *.sqlite
 *.db
 *.gguf

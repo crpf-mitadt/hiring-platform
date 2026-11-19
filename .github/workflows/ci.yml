@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-tests:
+    name: frontend-tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Run frontend typecheck
+        run: npm run typecheck
+      - name: Run frontend lint
+        run: npm run lint
+
+  backend-tests:
+    name: backend-tests
+    runs-on: ubuntu-latest
+    env:
+      HIRING_SCREENING_ENGINE_ROOT: apps/api/app/tests/fixtures/engine_contract
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install backend development dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run backend tests
+        run: python -m pytest
+      - name: Run backend lint
+        run: python -m ruff check .
+
+  repository-integrity:
+    name: repository-integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Check pull request diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --check "origin/${BASE_REF}...HEAD"
+      - name: Check pushed diff
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: git diff --check "${BEFORE_SHA}...${HEAD_SHA}"
+      - name: Check manually dispatched revision
+        if: github.event_name == 'workflow_dispatch'
+        run: git diff --check HEAD^ HEAD
+      - name: Validate repository configuration
+        run: |
+          python -c 'import json; json.load(open("apps/web/package.json")); json.load(open("apps/web/package-lock.json"))'
+          python -c 'import pathlib, tomllib; tomllib.loads(pathlib.Path("pyproject.toml").read_text())'
+          test -s .github/CODEOWNERS
+          test -s .github/pull_request_template.md

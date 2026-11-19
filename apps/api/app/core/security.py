@@ -1,3 +1,4 @@
+from app.core.config import get_settings
 from app.core.errors import PermissionDenied
 from app.models import Role, User
 from sqlalchemy import select
@@ -15,6 +16,11 @@ def require_any_role(user: User, allowed: set[Role]) -> None:
 
 
 def get_actor(db: Session, actor_id: str) -> User:
+    settings = get_settings()
+    if settings.actor_provider != "development":
+        raise PermissionDenied("Configured actor provider is not implemented in this milestone")
+    if settings.environment not in {"local", "test", "development"} and not settings.allow_development_actor_provider:
+        raise PermissionDenied("Development X-Actor-Id provider is disabled for this environment")
     user = db.scalar(select(User).where(User.id == actor_id))
     if user is None:
         raise PermissionDenied("Unknown actor")
@@ -28,4 +34,3 @@ STAFF_ROLES = {
     Role.PROCTOR,
     Role.HIRING_ADMIN,
 }
-

@@ -1,12 +1,27 @@
 import pytest
+from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
 from app.models import Role
+from app.schemas.jobs import DepartmentCreate, SchoolCreate
+from app.schemas.users import UserCreate
+from app.services.jobs import create_department, create_school
+from app.services.users import create_user as create_user_record
+from app.services.users import serialize_user
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture()
+def settings_tmp(monkeypatch, tmp_path):
+    get_settings.cache_clear()
+    monkeypatch.setenv("HIRING_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
+    monkeypatch.setenv("HIRING_SCREENING_OUTPUT_ROOT", str(tmp_path / "screening-output"))
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -27,7 +42,7 @@ def db_session():
 
 
 @pytest.fixture()
-def client(db_session):
+def client(db_session, settings_tmp):
     app = create_app()
 
     def override_get_db():
@@ -37,58 +52,67 @@ def client(db_session):
     return TestClient(app)
 
 
-def create_user(client: TestClient, *, email: str, full_name: str, roles: list[Role]) -> dict:
-    response = client.post(
-        "/api/users",
-        json={"email": email, "full_name": full_name, "roles": [role.value for role in roles]},
+def create_user(db_session, *, email: str, full_name: str, roles: list[Role], password: str | None = None) -> dict:
+    user = create_user_record(
+        db_session,
+        UserCreate(email=email, full_name=full_name, roles=roles, password=password),
     )
-    assert response.status_code == 200, response.text
-    return response.json()
+    db_session.commit()
+    return serialize_user(user)
 
 
 @pytest.fixture()
-def users(client):
+def users(db_session):
     return {
         "candidate": create_user(
-            client,
+            db_session,
             email="candidate@example.org",
             full_name="Synthetic Candidate",
             roles=[Role.CANDIDATE],
+            password="candidate-password",
         ),
         "other_candidate": create_user(
-            client,
+            db_session,
             email="other@example.org",
             full_name="Other Candidate",
             roles=[Role.CANDIDATE],
+            password="other-password",
         ),
         "recruiter": create_user(
-            client,
+            db_session,
             email="recruiter@example.org",
             full_name="Synthetic Recruiter",
             roles=[Role.HR_RECRUITER],
+            password="recruiter-password",
         ),
         "reviewer": create_user(
-            client,
+            db_session,
             email="reviewer@example.org",
             full_name="Synthetic Reviewer",
             roles=[Role.DEPARTMENT_REVIEWER],
+            password="reviewer-password",
         ),
         "admin": create_user(
-            client,
+            db_session,
             email="admin@example.org",
             full_name="Synthetic Admin",
             roles=[Role.HIRING_ADMIN],
+            password="admin-password",
         ),
     }
 
 
 @pytest.fixture()
-def org(client):
-    school = client.post("/api/schools", json={"name": "Synthetic School"}).json()
-    department = client.post(
-        "/api/departments", json={"school_id": school["id"], "name": "Synthetic Department"}
-    ).json()
-    return {"school": school, "department": department}
+def org(db_session):
+    school = create_school(db_session, SchoolCreate(name="Synthetic School"))
+    department = create_department(
+        db_session, DepartmentCreate(school_id=school.id, name="Synthetic Department")
+    )
+    db_session.commit()
+    return {
+        "school": {"id": school.id, "name": school.name},
+        "department": {"id": department.id, "school_id": department.school_id, "name": department.name},
+    }
 
 
 @pytest.fixture()
@@ -117,6 +141,16 @@ def draft_job(client, users, org):
 
 @pytest.fixture()
 def published_job(client, users, draft_job):
+    version = client.post(
+        f"/api/jobs/{draft_job['id']}/generate-rubric",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert version.status_code == 200, version.text
+    approved = client.post(
+        f"/api/rubric-versions/{version.json()['id']}/approve",
+        headers={"X-Actor-Id": users["recruiter"]["id"]},
+    )
+    assert approved.status_code == 200, approved.text
     response = client.post(
         f"/api/jobs/{draft_job['id']}/publish",
         headers={"X-Actor-Id": users["recruiter"]["id"]},
@@ -125,8 +159,25 @@ def published_job(client, users, draft_job):
     return response.json()
 
 
+def upload_resume(client: TestClient, actor: dict, filename: str = "synthetic-resume.json") -> dict:
+    response = client.post(
+        "/api/documents/resumes",
+        headers={"X-Actor-Id": actor["id"]},
+        files={
+            "file": (
+                filename,
+                b'{"candidate_id":"synthetic-candidate","schema_version":"structured-resume-v1"}',
+                "application/json",
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def submit_application(client, users, published_job, actor_key="candidate") -> dict:
     actor = users[actor_key]
+    resume = upload_resume(client, actor)
     response = client.post(
         f"/api/applications/jobs/{published_job['id']}/apply",
         headers={"X-Actor-Id": actor["id"]},
@@ -138,11 +189,10 @@ def submit_application(client, users, published_job, actor_key="candidate") -> d
                 "phone": "0000000000",
                 "education_profile": {"highest_degree": "Synthetic degree"},
                 "work_experience_profile": {"summary": "Synthetic experience"},
-                "resume_document_ref": "synthetic-resume-ref",
+                "resume_document_id": resume["id"],
             },
-            "resume_document_ref": "synthetic-resume-ref",
+            "resume_document_id": resume["id"],
         },
     )
     assert response.status_code == 200, response.text
     return response.json()
-

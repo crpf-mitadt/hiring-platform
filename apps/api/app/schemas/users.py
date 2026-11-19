@@ -7,6 +7,7 @@ class UserCreate(ApiModel):
     email: EmailStr
     full_name: str
     roles: list[Role]
+    password: str | None = None
 
 
 class UserRead(ApiModel):
@@ -15,3 +16,13 @@ class UserRead(ApiModel):
     full_name: str
     roles: list[Role]
 
+
+class LoginRequest(ApiModel):
+    email: EmailStr
+    password: str
+
+
+class RegisterCandidateRequest(ApiModel):
+    email: EmailStr
+    full_name: str
+    password: str
